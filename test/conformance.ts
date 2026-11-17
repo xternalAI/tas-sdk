@@ -143,32 +143,53 @@ export const datasetItems = [
   { id: "list", input: [1, 2, 3], expected: [3, 2, 1] },
 ];
 
-/** Every dataset store must pass this: what you push is what you pull, and pushing again updates in place. */
-export function datasetConformance(make: () => import("../src/index.ts").DatasetStore, name = "conformance") {
+/** Re-run `check` until it passes or `withinMs` has gone by. For platforms whose reads trail their writes. */
+async function eventually(check: () => Promise<void>, withinMs: number): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  for (;;) {
+    try {
+      return await check();
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+}
+
+/**
+ * Every dataset store must pass this: what you push is what you pull, and pushing again updates in
+ * place. `settleMs` allows for a platform that takes a moment to show what was just written
+ * (Braintrust does, by a second or two); offline stores use 0 and must be right at once.
+ */
+export function datasetConformance(make: () => import("../src/index.ts").DatasetStore, name = "conformance", settleMs = 0) {
   it("round-trips items of every shape, with their ids", async () => {
     const store = make();
     await store.push({ name, description: "Round trip", items: datasetItems });
-    const pulled = (await store.pull(name))!;
-    expect(pulled.name).toBe(name);
-    expect(pulled.description).toBe("Round trip");
-    expect([...pulled.items].sort((a, b) => a.id!.localeCompare(b.id!))).toEqual([...datasetItems].sort((a, b) => a.id.localeCompare(b.id)));
+    await eventually(async () => {
+      const pulled = (await store.pull(name))!;
+      expect(pulled.name).toBe(name);
+      expect(pulled.description).toBe("Round trip");
+      expect([...pulled.items].sort((a, b) => a.id!.localeCompare(b.id!))).toEqual([...datasetItems].sort((a, b) => a.id.localeCompare(b.id)));
+    }, settleMs);
   });
 
   it("pushing again updates items by id, adds new ones, and leaves the rest", async () => {
     const store = make();
     await store.push({ name, items: datasetItems });
     await store.push({ name, items: [{ id: "plain", input: "a bare string", expected: 5 }, { id: "added", input: { new: true } }] });
-    const byId = new Map((await store.pull(name))!.items.map((item) => [item.id, item]));
-    expect(byId.size).toBe(datasetItems.length + 1);
-    expect(byId.get("plain")!.expected).toBe(5);
-    expect(byId.get("added")).toEqual({ id: "added", input: { new: true } });
-    expect(byId.get("object")).toEqual(datasetItems[1]);
+    await eventually(async () => {
+      const byId = new Map((await store.pull(name))!.items.map((item) => [item.id, item]));
+      expect(byId.size).toBe(datasetItems.length + 1);
+      expect(byId.get("plain")!.expected).toBe(5);
+      expect(byId.get("added")).toEqual({ id: "added", input: { new: true } });
+      expect(byId.get("object")).toEqual(datasetItems[1]);
+    }, settleMs);
   });
 
   it("lists datasets and returns null for one that does not exist", async () => {
     const store = make();
     await store.push({ name, items: [datasetItems[0]!] });
-    expect(await store.list()).toContain(name);
+    await eventually(async () => expect(await store.list()).toContain(name), settleMs);
     expect(await store.pull(`${name}-missing`)).toBeNull();
   });
 }
