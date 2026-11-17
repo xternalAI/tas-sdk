@@ -1,10 +1,9 @@
 import type { GatewayConfig } from "./config.ts";
-import { GatewayError, requestCompletion, type ChatMessage, type ToolCall } from "./gateway.ts";
-import type { PromptDefinition, ResolvedPrompt } from "./prompt/model.ts";
-import type { ContentPart } from "./prompt/model.ts";
+import { type ChatMessage, GatewayError, requestCompletion, type ToolCall } from "./gateway.ts";
+import type { ContentPart, PromptDefinition, ResolvedPrompt } from "./prompt/model.ts";
 import { toOpenAIContent } from "./prompt/parts.ts";
-import { renderPrompt, type RenderInput, type RenderedMessage } from "./prompt/template.ts";
-import { toJsonSchema, validateSchema, type InferSchema, type SchemaInput } from "./schema.ts";
+import { type RenderedMessage, type RenderInput, renderPrompt } from "./prompt/template.ts";
+import { type InferSchema, type SchemaInput, toJsonSchema, validateSchema } from "./schema.ts";
 import type { SpanHandle, SpanInit, TokenUsage, TraceOptions, Tracer } from "./trace.ts";
 
 /**
@@ -146,7 +145,8 @@ function resolveTools(def: PromptDefinition, given: RunTools | undefined): Resol
 
   for (const [name, tool] of Object.entries(given ?? {})) {
     if (typeof tool === "function") {
-      if (!specs.has(name)) throw new GatewayError(`tool "${name}" has a function but no definition: declare it in the prompt or pass { parameters, execute }`);
+      if (!specs.has(name))
+        throw new GatewayError(`tool "${name}" has a function but no definition: declare it in the prompt or pass { parameters, execute }`);
       handlers.set(name, tool);
       continue;
     }
@@ -177,14 +177,19 @@ function resolveOutput(def: PromptDefinition, given: SchemaInput | undefined): R
   if (!schema) return undefined;
   // A validator that cannot describe itself still works if the prompt carries a schema to show the model.
   const forModel = toJsonSchema(schema) ?? def.output?.schema;
-  if (!forModel) throw new GatewayError("output: this schema library cannot produce JSON Schema, and the prompt has no output schema to send instead");
+  if (!forModel)
+    throw new GatewayError("output: this schema library cannot produce JSON Schema, and the prompt has no output schema to send instead");
   // The prompt's name and strict flag describe the prompt's schema, so they apply only when that is the one in use.
   const fromPrompt = given ? undefined : def.output;
   return {
     schema,
     responseFormat: {
       type: "json_schema",
-      json_schema: { name: fromPrompt?.name ?? "output", schema: forModel, ...(fromPrompt?.strict === undefined ? {} : { strict: fromPrompt.strict }) },
+      json_schema: {
+        name: fromPrompt?.name ?? "output",
+        schema: forModel,
+        ...(fromPrompt?.strict === undefined ? {} : { strict: fromPrompt.strict }),
+      },
     },
   };
 }
@@ -229,7 +234,12 @@ async function executeToolCall(call: ToolCall, tools: ResolvedTools, span: SpanR
 // ---------------------------------------------------------------------------------------------
 
 /** Run `messages` against the gateway with the prompt's configuration, looping over tool calls. */
-async function execute<S extends SchemaInput | undefined>(ctx: Context, prompt: ResolvedPrompt, messages: ChatMessage[], options: CallOptions<S>): Promise<RunResult<OutputOf<S>>> {
+async function execute<S extends SchemaInput | undefined>(
+  ctx: Context,
+  prompt: ResolvedPrompt,
+  messages: ChatMessage[],
+  options: CallOptions<S>,
+): Promise<RunResult<OutputOf<S>>> {
   const def = prompt.definition;
   const { gateway } = ctx;
   if (!gateway) throw new GatewayError("no gateway configured: set `gateway` in the client config");
@@ -240,7 +250,12 @@ async function execute<S extends SchemaInput | undefined>(ctx: Context, prompt: 
   const tools = resolveTools(def, options.tools);
   const output = resolveOutput(def, options.output);
   const modelParams = { ...def.model?.params, ...options.params };
-  const body = { model, ...modelParams, ...(tools.wire ? { tools: tools.wire } : {}), ...(output ? { response_format: output.responseFormat } : {}) };
+  const body = {
+    model,
+    ...modelParams,
+    ...(tools.wire ? { tools: tools.wire } : {}),
+    ...(output ? { response_format: output.responseFormat } : {}),
+  };
 
   const transcript = [...messages];
   const usage: Usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
@@ -249,11 +264,15 @@ async function execute<S extends SchemaInput | undefined>(ctx: Context, prompt: 
 
   for (let steps = 1; ; steps++) {
     // One span per model call, carrying exactly what was sent and what came back.
-    const reply = await ctx.span(model, { kind: "generation", input: [...transcript], model, modelParams, prompt: promptRef(prompt) }, async (generation) => {
-      const completion = await requestCompletion(gateway, { ...body, messages: transcript }, { signal: options.signal, onText });
-      generation.update({ output: completion.message, usage: completion.usage });
-      return completion;
-    });
+    const reply = await ctx.span(
+      model,
+      { kind: "generation", input: [...transcript], model, modelParams, prompt: promptRef(prompt) },
+      async (generation) => {
+        const completion = await requestCompletion(gateway, { ...body, messages: transcript }, { signal: options.signal, onText });
+        generation.update({ output: completion.message, usage: completion.usage });
+        return completion;
+      },
+    );
     transcript.push(reply.message);
     usage.inputTokens += reply.usage.inputTokens;
     usage.outputTokens += reply.usage.outputTokens;
@@ -288,7 +307,11 @@ async function execute<S extends SchemaInput | undefined>(ctx: Context, prompt: 
 }
 
 /** Render a prompt and run it inside a span named after it; model calls and tool executions nest under that. */
-function runPrompt<S extends SchemaInput | undefined>(ctx: Context, prompt: ResolvedPrompt, options: RunOptions<S>): Promise<RunResult<OutputOf<S>>> {
+function runPrompt<S extends SchemaInput | undefined>(
+  ctx: Context,
+  prompt: ResolvedPrompt,
+  options: RunOptions<S>,
+): Promise<RunResult<OutputOf<S>>> {
   return ctx.span(prompt.definition.name, { ...options.trace, input: options.variables ?? {}, prompt: promptRef(prompt) }, async (root) => {
     const messages: ChatMessage[] = [...toWire(renderPrompt(prompt.definition, options)), ...(options.messages ?? [])];
     const result = await execute(ctx, prompt, messages, options);
@@ -319,10 +342,12 @@ function toStream<Output>(start: (emit: Emit) => Promise<RunResult<Output>>): Ru
     queue.push(event);
     notify();
   });
-  result.then(
-    () => ((finished = true), notify()),
-    (error: unknown) => ((failure = error), (finished = true), notify()),
-  );
+  const finish = (error?: unknown) => {
+    failure = error;
+    finished = true;
+    notify();
+  };
+  result.then(() => finish(), finish);
 
   async function* events(): AsyncGenerator<StreamEvent> {
     for (;;) {
@@ -345,17 +370,33 @@ function toStream<Output>(start: (emit: Emit) => Promise<RunResult<Output>>): Ru
 // ---------------------------------------------------------------------------------------------
 
 /** Render a prompt and run it. */
-export function run<S extends SchemaInput | undefined>(gateway: GatewayConfig | undefined, prompt: ResolvedPrompt, options: RunOptions<S> = {}, tracer?: Tracer): Promise<RunResult<OutputOf<S>>> {
+export function run<S extends SchemaInput | undefined>(
+  gateway: GatewayConfig | undefined,
+  prompt: ResolvedPrompt,
+  options: RunOptions<S> = {},
+  tracer?: Tracer,
+): Promise<RunResult<OutputOf<S>>> {
   return runPrompt({ gateway, span: spanRunner(tracer) }, prompt, options);
 }
 
 /** Render a prompt and run it, reporting text and tool activity as it happens. `load` may fetch the prompt lazily. */
-export function stream<S extends SchemaInput | undefined>(gateway: GatewayConfig | undefined, load: () => Promise<ResolvedPrompt>, options: RunOptions<S> = {}, tracer?: Tracer): RunStream<OutputOf<S>> {
+export function stream<S extends SchemaInput | undefined>(
+  gateway: GatewayConfig | undefined,
+  load: () => Promise<ResolvedPrompt>,
+  options: RunOptions<S> = {},
+  tracer?: Tracer,
+): RunStream<OutputOf<S>> {
   return toStream(async (emit) => runPrompt({ gateway, span: spanRunner(tracer), emit }, await load(), options));
 }
 
 /** Run messages you assembled yourself against a prompt's configuration, without rendering it. */
-export function complete<S extends SchemaInput | undefined>(gateway: GatewayConfig | undefined, prompt: ResolvedPrompt, messages: ChatMessage[], options: CallOptions<S> = {}, tracer?: Tracer): Promise<RunResult<OutputOf<S>>> {
+export function complete<S extends SchemaInput | undefined>(
+  gateway: GatewayConfig | undefined,
+  prompt: ResolvedPrompt,
+  messages: ChatMessage[],
+  options: CallOptions<S> = {},
+  tracer?: Tracer,
+): Promise<RunResult<OutputOf<S>>> {
   return execute({ gateway, span: spanRunner(tracer) }, prompt, messages, options);
 }
 
@@ -363,27 +404,46 @@ export interface ChatSession {
   /** The conversation so far, including the rendered prompt once the first message has been sent. */
   readonly messages: readonly ChatMessage[];
   /** Add a user message (text, or parts to attach images and files) and get the reply. Per-call options override the session's. */
-  send<S extends SchemaInput | undefined = undefined>(content: string | ContentPart[], options?: CallOptions<S>): Promise<RunResult<OutputOf<S>>>;
+  send<S extends SchemaInput | undefined = undefined>(
+    content: string | ContentPart[],
+    options?: CallOptions<S>,
+  ): Promise<RunResult<OutputOf<S>>>;
   /** As `send`, but streamed. */
   stream<S extends SchemaInput | undefined = undefined>(content: string | ContentPart[], options?: CallOptions<S>): RunStream<OutputOf<S>>;
 }
 
 /** A multi-turn conversation: the prompt is rendered once, then each turn continues from the last reply. */
-export function chat(gateway: GatewayConfig | undefined, load: () => Promise<ResolvedPrompt>, options: RunOptions = {}, tracer?: Tracer): ChatSession {
+export function chat(
+  gateway: GatewayConfig | undefined,
+  load: () => Promise<ResolvedPrompt>,
+  options: RunOptions = {},
+  tracer?: Tracer,
+): ChatSession {
   const span = spanRunner(tracer);
   let history: ChatMessage[] | undefined;
   let prompt: ResolvedPrompt | undefined;
 
-  async function turn<S extends SchemaInput | undefined>(content: string | ContentPart[], perCall: CallOptions<S> | undefined, emit?: Emit): Promise<RunResult<OutputOf<S>>> {
+  async function turn<S extends SchemaInput | undefined>(
+    content: string | ContentPart[],
+    perCall: CallOptions<S> | undefined,
+    emit?: Emit,
+  ): Promise<RunResult<OutputOf<S>>> {
     const loaded = (prompt ??= await load());
     // Each turn is its own trace; give the session a `trace.sessionId` to group them on the platform.
-    return span(loaded.definition.name, { ...options.trace, ...perCall?.trace, input: content, prompt: promptRef(loaded) }, async (root) => {
-      const base = history ?? [...toWire(renderPrompt(loaded.definition, options)), ...(options.messages ?? [])];
-      const result = await execute({ gateway, span, emit }, loaded, [...base, { role: "user", content: toOpenAIContent(content) }], { ...options, ...perCall } as CallOptions<S>);
-      history = result.messages; // only a successful turn becomes part of the conversation
-      root.update({ output: result.output ?? result.text });
-      return result;
-    });
+    return span(
+      loaded.definition.name,
+      { ...options.trace, ...perCall?.trace, input: content, prompt: promptRef(loaded) },
+      async (root) => {
+        const base = history ?? [...toWire(renderPrompt(loaded.definition, options)), ...(options.messages ?? [])];
+        const result = await execute({ gateway, span, emit }, loaded, [...base, { role: "user", content: toOpenAIContent(content) }], {
+          ...options,
+          ...perCall,
+        } as CallOptions<S>);
+        history = result.messages; // only a successful turn becomes part of the conversation
+        root.update({ output: result.output ?? result.text });
+        return result;
+      },
+    );
   }
 
   return {

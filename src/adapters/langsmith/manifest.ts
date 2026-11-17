@@ -4,11 +4,11 @@
  * between prompt names and repo handles. No network calls happen here.
  */
 import { isDeepStrictEqual } from "node:util";
-import { ENVELOPE_KEY, fingerprint, packEnvelope, unpackEnvelope, type Envelope } from "../../adapter.ts";
-import { parsePrompt, type ContentPart, type MessageContent, type PromptDefinition, type PromptMessage } from "../../prompt/model.ts";
+import { ENVELOPE_KEY, type Envelope, fingerprint, packEnvelope, unpackEnvelope } from "../../adapter.ts";
+import { type ContentPart, type MessageContent, type PromptDefinition, type PromptMessage, parsePrompt } from "../../prompt/model.ts";
 import { extractVariables } from "../../prompt/template.ts";
 import { LangSmithError } from "./error.ts";
-import { cls, lc, type Lc } from "./lc.ts";
+import { cls, type Lc, lc } from "./lc.ts";
 import { decodeModel, decodeTools, encodeModel, type Resolver } from "./models.ts";
 
 /** A repo as the LangSmith API returns it. Description and tags are repo-wide, not per commit. */
@@ -20,7 +20,11 @@ export interface Repo {
   commit_tags?: string[] | null;
 }
 
-const MESSAGE_CLASS = { system: "SystemMessagePromptTemplate", user: "HumanMessagePromptTemplate", assistant: "AIMessagePromptTemplate" } as const;
+const MESSAGE_CLASS = {
+  system: "SystemMessagePromptTemplate",
+  user: "HumanMessagePromptTemplate",
+  assistant: "AIMessagePromptTemplate",
+} as const;
 const ROLE_OF: Record<string, "system" | "user" | "assistant"> = {
   SystemMessagePromptTemplate: "system",
   HumanMessagePromptTemplate: "user",
@@ -96,7 +100,8 @@ function messageTemplate(message: PromptMessage): Lc {
 }
 
 const hasFileParts = (def: PromptDefinition) =>
-  def.type === "chat" && def.messages.some((m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type === "file"));
+  def.type === "chat" &&
+  def.messages.some((m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type === "file"));
 
 /** The prompt half of a manifest: the templates, with the envelope in `metadata`. */
 function encodePrompt(def: PromptDefinition): Lc {
@@ -166,7 +171,10 @@ function decodeMessage(node: Lc, prompt: Lc, fail: Fail): PromptMessage {
   if (typeof node.kwargs.content === "string") return { role, content: node.kwargs.content }; // a fixed message, no template
   const content: Lc | Lc[] | undefined = node.kwargs.prompt;
   if (!content) throw fail("a message has no content");
-  return { role, content: Array.isArray(content) ? content.map((part) => decodePart(part, prompt, fail)) : templateText(content, prompt, fail) };
+  return {
+    role,
+    content: Array.isArray(content) ? content.map((part) => decodePart(part, prompt, fail)) : templateText(content, prompt, fail),
+  };
 }
 
 /** Output schema: exact from the envelope while LangSmith still holds the schema we wrote. */

@@ -4,14 +4,28 @@ import { createHttp, fromOpenAITools, fromResponseFormat, PlatformError, toOpenA
 describe("createHttp", () => {
   const calls: { url: string; init: RequestInit }[] = [];
   const answering = (status: number, body = "") =>
-    (async (url: URL | RequestInfo, init?: RequestInit) => (calls.push({ url: String(url), init: init! }), new Response(body || null, { status }))) as typeof fetch;
-  const http = (status: number, body?: string) => createHttp({ platform: "acme", baseURL: "https://api.acme.test/v1", headers: { authorization: "Bearer k" }, fetch: answering(status, body) });
+    (async (url: URL | RequestInfo, init?: RequestInit) => (
+      calls.push({ url: String(url), init: init! }), new Response(body || null, { status })
+    )) as typeof fetch;
+  const http = (status: number, body?: string) =>
+    createHttp({
+      platform: "acme",
+      baseURL: "https://api.acme.test/v1",
+      headers: { authorization: "Bearer k" },
+      fetch: answering(status, body),
+    });
 
   it("sends JSON with the adapter's headers and query, skipping undefined query values", async () => {
     calls.length = 0;
-    expect(await http(200, '{"ok":true}').request("POST", "/things", { query: { a: "1", skipped: undefined }, body: { x: 1 } })).toEqual({ ok: true });
+    expect(await http(200, '{"ok":true}').request("POST", "/things", { query: { a: "1", skipped: undefined }, body: { x: 1 } })).toEqual({
+      ok: true,
+    });
     expect(calls[0]!.url).toBe("https://api.acme.test/v1/things?a=1");
-    expect(calls[0]!.init).toMatchObject({ method: "POST", body: '{"x":1}', headers: { "content-type": "application/json", authorization: "Bearer k" } });
+    expect(calls[0]!.init).toMatchObject({
+      method: "POST",
+      body: '{"x":1}',
+      headers: { "content-type": "application/json", authorization: "Bearer k" },
+    });
     await http(200, "{}").request("GET", "/things");
     expect(calls[1]!.init.body).toBeUndefined();
   });
@@ -21,7 +35,9 @@ describe("createHttp", () => {
   });
 
   it("throws a PlatformError carrying the status and the start of the reply", async () => {
-    const failure = await http(500, "boom ".repeat(200)).request("GET", "/things").catch((error: unknown) => error);
+    const failure = await http(500, "boom ".repeat(200))
+      .request("GET", "/things")
+      .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(PlatformError);
     expect(failure).toMatchObject({ platform: "acme", status: 500 });
     expect((failure as Error).message).toMatch(/^acme GET \/things failed: 500 boom /);
@@ -38,7 +54,13 @@ describe("createHttp", () => {
   it("uses the adapter's own error class when given one, and exposes the fetch it was given", async () => {
     class AcmeError extends Error {}
     const fetchImpl = answering(400, "bad");
-    const client = createHttp({ platform: "acme", baseURL: "https://x.test", headers: {}, fetch: fetchImpl, error: (message) => new AcmeError(message) });
+    const client = createHttp({
+      platform: "acme",
+      baseURL: "https://x.test",
+      headers: {},
+      fetch: fetchImpl,
+      error: (message) => new AcmeError(message),
+    });
     await expect(client.request("GET", "/")).rejects.toBeInstanceOf(AcmeError);
     expect(client.fetch).toBe(fetchImpl);
     expect(createHttp({ platform: "acme", baseURL: "https://x.test", headers: {} }).fetch).toBe(fetch);
@@ -47,7 +69,10 @@ describe("createHttp", () => {
 
 describe("OpenAI shapes", () => {
   it("converts tools both ways; no tools has one spelling", () => {
-    const tools = [{ name: "a", description: "does a", parameters: { type: "object" } }, { name: "b", parameters: {} }];
+    const tools = [
+      { name: "a", description: "does a", parameters: { type: "object" } },
+      { name: "b", parameters: {} },
+    ];
     const wire = toOpenAITools(tools);
     expect(wire).toEqual([
       { type: "function", function: { name: "a", description: "does a", parameters: { type: "object" } } },
@@ -60,7 +85,10 @@ describe("OpenAI shapes", () => {
 
   it("converts an output contract both ways, and a missing name survives the trip", () => {
     const named = { name: "triage", schema: { type: "object" }, strict: true };
-    expect(toResponseFormat(named)).toEqual({ type: "json_schema", json_schema: { name: "triage", schema: { type: "object" }, strict: true } });
+    expect(toResponseFormat(named)).toEqual({
+      type: "json_schema",
+      json_schema: { name: "triage", schema: { type: "object" }, strict: true },
+    });
     expect(fromResponseFormat(toResponseFormat(named))).toEqual({ output: named });
     const unnamed = { schema: { type: "object" } };
     expect(toResponseFormat(unnamed)).toEqual({ type: "json_schema", json_schema: { name: "output", schema: { type: "object" } } });

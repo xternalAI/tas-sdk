@@ -11,7 +11,7 @@ import { checkPortability } from "./portability.ts";
 import { loadPrompts, writePromptSchema } from "./prompt/file.ts";
 import { generatePromptTypes } from "./prompt/types.ts";
 import { startStudio } from "./studio/server.ts";
-import { pull, push, remove, status, type SyncContext, type SyncResult } from "./sync.ts";
+import { pull, push, remove, type SyncContext, type SyncResult, status } from "./sync.ts";
 
 /**
  * The `tas` command line. `runCli` is the whole program as a function: it takes arguments and
@@ -103,7 +103,11 @@ class UsageError extends Error {}
 
 const CONFIG_NAMES = ["tas.config.ts", "tas.config.mts", "tas.config.js", "tas.config.mjs"];
 
-async function loadConfig(cwd: string, path: string | undefined, profile: string | undefined): Promise<{ config: TasConfig; target: string }> {
+async function loadConfig(
+  cwd: string,
+  path: string | undefined,
+  profile: string | undefined,
+): Promise<{ config: TasConfig; target: string }> {
   const file = path ? resolve(cwd, path) : CONFIG_NAMES.map((name) => resolve(cwd, name)).find(existsSync);
   if (!file || !existsSync(file)) throw new UsageError(`no config found (looked for ${path ?? CONFIG_NAMES.join(", ")})`);
   const loaded = ((await import(pathToFileURL(file).href)) as { default?: TasConfig | TasProfiles }).default;
@@ -127,7 +131,13 @@ const promptsDir = (inv: Invocation) => inv.path(inv.config.promptsDir ?? "promp
 function syncContext(inv: Invocation): SyncContext {
   const registry = inv.config.platform.prompts;
   if (!registry) throw new UsageError(`platform "${inv.config.platform.id}" has no prompt registry`);
-  return { dir: promptsDir(inv), registry, platform: inv.config.platform.id, canonical: inv.config.canonical ?? "repo", target: inv.target };
+  return {
+    dir: promptsDir(inv),
+    registry,
+    platform: inv.config.platform.id,
+    canonical: inv.config.canonical ?? "repo",
+    target: inv.target,
+  };
 }
 
 const REASONS: Record<NonNullable<SyncResult["reason"]>, (r: SyncResult) => string> = {
@@ -167,8 +177,11 @@ const promptCommands: Record<string, Command> = {
     let blocked = false;
     for (const def of definitions) {
       const notes = checkPortability(def);
-      inv.io.log(`${notes.some((n) => n.level === "error") ? "error  " : notes.some((n) => n.level === "warning") ? "warning" : "ok     "} ${def.name}`);
-      for (const note of notes) inv.io.log(`        ${note.level.padEnd(7)} ${note.platform === "all" ? "every platform" : note.platform}: ${note.message}`);
+      inv.io.log(
+        `${notes.some((n) => n.level === "error") ? "error  " : notes.some((n) => n.level === "warning") ? "warning" : "ok     "} ${def.name}`,
+      );
+      for (const note of notes)
+        inv.io.log(`        ${note.level.padEnd(7)} ${note.platform === "all" ? "every platform" : note.platform}: ${note.message}`);
       blocked ||= notes.some((n) => n.level === "error");
     }
     if (!definitions.length) inv.io.log("no prompts");
@@ -279,14 +292,21 @@ async function runEvals(inv: Invocation): Promise<number> {
       const exported = ((await import(pathToFileURL(inv.path(file)).href)) as { default?: unknown }).default;
       const resolved = typeof exported === "function" ? await exported(client) : exported;
       const definitions = (Array.isArray(resolved) ? resolved : [resolved]) as EvalDefinition[];
-      if (!definitions[0]?.name) throw new UsageError(`${file}: default export must be defineEval({...}), an array of them, or a function returning either`);
+      if (!definitions[0]?.name)
+        throw new UsageError(`${file}: default export must be defineEval({...}), an array of them, or a function returning either`);
       for (const { name, ...options } of definitions) {
         const result = await client.evaluate(name, options);
-        const scores = Object.entries(result.summary.scores).map(([key, value]) => `${key} ${value.mean.toFixed(3)}`).join("  ") || "(no scores)";
+        const scores =
+          Object.entries(result.summary.scores)
+            .map(([key, value]) => `${key} ${value.mean.toFixed(3)}`)
+            .join("  ") || "(no scores)";
         const errored = result.summary.errors ? `  ${result.summary.errors} errored` : "";
         inv.io.log(`${result.passed ? "pass" : "FAIL"}  ${name}  ${result.rows.length} items  ${scores}${errored}`);
         for (const failure of result.failures) inv.io.log(`      below threshold: ${failure}`);
-        for (const report of result.reports) inv.io.log(`      ${report.platform}: ${report.error ? `not reported (${report.error})` : (report.url ?? `reported as ${result.runName}`)}`);
+        for (const report of result.reports)
+          inv.io.log(
+            `      ${report.platform}: ${report.error ? `not reported (${report.error})` : (report.url ?? `reported as ${result.runName}`)}`,
+          );
         failed ||= !result.passed;
       }
     }
@@ -303,7 +323,8 @@ async function runEvals(inv: Invocation): Promise<number> {
 /** Serve the studio until the command is stopped. */
 async function runStudio(inv: Invocation): Promise<number> {
   const port = inv.flags.port === undefined ? undefined : Number(inv.flags.port);
-  if (port !== undefined && !(Number.isInteger(port) && port >= 0 && port < 65536)) throw new UsageError(`--port must be a port number, got "${inv.flags.port}"`);
+  if (port !== undefined && !(Number.isInteger(port) && port >= 0 && port < 65536))
+    throw new UsageError(`--port must be a port number, got "${inv.flags.port}"`);
   const studio = await startStudio({ config: inv.config, dir: promptsDir(inv), target: inv.target }, port === undefined ? {} : { port });
   inv.io.log(`Studio is running at ${studio.url}`);
   inv.io.log(`Editing ${promptsDir(inv)} (platform: ${inv.config.platform.id}). Press Ctrl-C to stop.`);
@@ -359,7 +380,14 @@ export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<n
     const { config, target } = await loadConfig(out.cwd, values.config, values.profile);
     return await command({
       args: typeof group === "function" ? rest : rest.slice(1),
-      flags: { config: values.config, profile: values.profile, label: values.label, force: values.force, yes: values.yes, port: values.port },
+      flags: {
+        config: values.config,
+        profile: values.profile,
+        label: values.label,
+        force: values.force,
+        yes: values.yes,
+        port: values.port,
+      },
       io: out,
       config,
       target,

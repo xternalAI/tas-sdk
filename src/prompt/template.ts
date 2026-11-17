@@ -29,11 +29,14 @@ function variableOf(triple: string | undefined, double: string | undefined): str
 }
 
 /** Every string of a part that may hold variables. */
-const partStrings = (part: ContentPart): string[] => (part.type === "text" ? [part.text] : part.type === "image" ? [part.url] : [part.url, part.name ?? ""]);
+const partStrings = (part: ContentPart): string[] =>
+  part.type === "text" ? [part.text] : part.type === "image" ? [part.url] : [part.url, part.name ?? ""];
 
 function templateStrings(def: PromptDefinition): string[] {
   if (def.type === "text") return [def.text];
-  return def.messages.flatMap((m) => ("content" in m ? (typeof m.content === "string" ? [m.content] : m.content.flatMap(partStrings)) : []));
+  return def.messages.flatMap((m) =>
+    "content" in m ? (typeof m.content === "string" ? [m.content] : m.content.flatMap(partStrings)) : [],
+  );
 }
 
 function scan(text: string): { variables: string[]; nonPortable: string[] } {

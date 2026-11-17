@@ -52,7 +52,8 @@ export async function startStudio(context: StudioContext, options: StudioOptions
     };
     const json = (status: number, body: unknown) => send(status, "application/json; charset=utf-8", JSON.stringify(body));
     try {
-      if (!allowedHosts.has(request.headers.host ?? "")) return json(403, { error: "this server only answers on its own loopback address" });
+      if (!allowedHosts.has(request.headers.host ?? ""))
+        return json(403, { error: "this server only answers on its own loopback address" });
       const path = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
       if (request.method === "GET" && path === "/") return send(200, "text/html; charset=utf-8", studioPage(token));
       if (!path.startsWith("/api/")) return json(404, { error: "not found" });

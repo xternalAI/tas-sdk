@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { ARCHIVED_TAG, hashPrompt, type PromptDefinition, type PromptRef } from "./prompt/model.ts";
 import type { DatasetStore } from "./dataset.ts";
 import type { ExperimentReporter } from "./eval.ts";
+import { ARCHIVED_TAG, hashPrompt, type PromptDefinition, type PromptRef } from "./prompt/model.ts";
 import type { TraceExporter } from "./trace.ts";
 
 /**
@@ -88,7 +88,10 @@ export function tagsWithoutArchiveMarker(tags: string[] | null | undefined, arch
  * if it was, the emulated copy is stale and the vendor's edit wins.
  */
 export function fingerprint(native: unknown): string {
-  return createHash("sha256").update(JSON.stringify(native ?? null)).digest("hex").slice(0, 16);
+  return createHash("sha256")
+    .update(JSON.stringify(native ?? null))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 /** Reserved metadata key holding whatever a platform cannot represent natively. */
@@ -103,10 +106,7 @@ export interface Envelope {
 }
 
 /** Build the envelope for the fields this platform has to emulate. */
-export function packEnvelope(
-  definition: PromptDefinition,
-  emulated: readonly (keyof PromptDefinition)[],
-): Envelope {
+export function packEnvelope(definition: PromptDefinition, emulated: readonly (keyof PromptDefinition)[]): Envelope {
   const fields: Record<string, unknown> = {};
   for (const key of emulated) {
     const value = (definition as unknown as Record<string, unknown>)[key];

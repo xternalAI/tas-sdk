@@ -18,7 +18,7 @@ export function fakeBraintrust(options: { environments?: string[]; keepMetadata?
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     calls.push(`${method} ${url.pathname}`);
-    if ((init?.headers as Record<string, string>).authorization !== "Bearer test-key") return json({ error: "unauthorized" }, 401);
+    if ((init!.headers as Record<string, string>).authorization !== "Bearer test-key") return json({ error: "unauthorized" }, 401);
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
 
     if (method === "GET" && url.pathname === "/v1/project") {
@@ -65,8 +65,10 @@ export function fakeBraintrust(options: { environments?: string[]; keepMetadata?
     }
     const listAssigned = /^\/environment-object\/prompt\/([^/]+)$/.exec(url.pathname);
     if (method === "GET" && listAssigned) {
-      const slug = [...versions.values()].find((v) => v[0]!.id === listAssigned[1])?.[0]!.slug ?? "";
-      return json({ objects: [...(assigned.get(slug) ?? [])].map(([environment_slug, object_version]) => ({ environment_slug, object_version })) });
+      const slug = [...versions.values()].find((v) => v[0]!.id === listAssigned[1])?.[0]?.slug ?? "";
+      return json({
+        objects: [...(assigned.get(slug) ?? [])].map(([environment_slug, object_version]) => ({ environment_slug, object_version })),
+      });
     }
     const del = /^\/v1\/prompt\/([^/]+)$/.exec(url.pathname);
     if (method === "DELETE" && del) {
@@ -100,14 +102,19 @@ export function fakeLangfuse() {
   const fetchImpl = (async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
-    if ((init?.headers as Record<string, string>).authorization !== expected) return json({ message: "unauthorized" }, 401);
+    if ((init!.headers as Record<string, string>).authorization !== expected) return json({ message: "unauthorized" }, 401);
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, any>) : {};
     const path = url.pathname.replace("/api/public/v2/prompts", "");
     if (path === url.pathname) return json({ message: "no such route" }, 404);
 
     if (method === "GET" && path === "") {
-      const all = [...store.values()].map((v) => ({ name: v[0]!.name, labels: [...new Set(v.flatMap((r) => r.labels))], tags: v[0]!.tags }));
-      const limit = Number(url.searchParams.get("limit")), page = Number(url.searchParams.get("page"));
+      const all = [...store.values()].map((v) => ({
+        name: v[0]!.name,
+        labels: [...new Set(v.flatMap((r) => r.labels))],
+        tags: v[0]!.tags,
+      }));
+      const limit = Number(url.searchParams.get("limit")),
+        page = Number(url.searchParams.get("page"));
       return json({ data: all.slice((page - 1) * limit, page * limit), meta: { totalPages: Math.max(1, Math.ceil(all.length / limit)) } });
     }
     if (method === "POST" && path === "") {
@@ -117,7 +124,15 @@ export function fakeLangfuse() {
       const labels = [...new Set([...(body.labels ?? []), "latest"])];
       for (const r of rows) r.labels = r.labels.filter((l) => !labels.includes(l));
       const prompt = Array.isArray(body.prompt) ? body.prompt.map((m: any) => (m.type ? m : { ...m, type: "chatmessage" })) : body.prompt;
-      const row: Row = { name: body.name, version: rows.length + 1, type: body.type, prompt, config: body.config ?? {}, labels, tags: body.tags ?? [] };
+      const row: Row = {
+        name: body.name,
+        version: rows.length + 1,
+        type: body.type,
+        prompt,
+        config: body.config ?? {},
+        labels,
+        tags: body.tags ?? [],
+      };
       rows.push(row);
       for (const r of rows) r.tags = row.tags; // tags belong to the prompt, not the version
       return json(row);
@@ -153,7 +168,14 @@ export function fakeLangfuse() {
  */
 export function fakeLangSmith() {
   type Commit = { id: string; commit_hash: string; manifest: any };
-  type Repo = { repo_handle: string; repo_type: string; description: string; tags: string[]; commits: Commit[]; commitTags: Map<string, string> };
+  type Repo = {
+    repo_handle: string;
+    repo_type: string;
+    description: string;
+    tags: string[];
+    commits: Commit[];
+    commitTags: Map<string, string>;
+  };
   const repos = new Map<string, Repo>();
   let counter = 0;
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -161,19 +183,31 @@ export function fakeLangSmith() {
   const fetchImpl = (async (input: URL | RequestInfo, init?: RequestInit) => {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
-    if ((init?.headers as Record<string, string>)["x-api-key"] !== "ls-test") return json({ detail: "unauthorized" }, 401);
+    if ((init!.headers as Record<string, string>)["x-api-key"] !== "ls-test") return json({ detail: "unauthorized" }, 401);
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, any>) : {};
     const path = url.pathname.replace("/api/v1", "");
     let m: RegExpExecArray | null;
 
     if (path === "/repos" && method === "POST") {
-      if (!/^[a-z][a-z0-9_-]*$/.test(body.repo_handle)) return json({ detail: "handle must be lowercase alphanumeric, hyphen, or underscore" }, 400);
+      if (!/^[a-z][a-z0-9_-]*$/.test(body.repo_handle))
+        return json({ detail: "handle must be lowercase alphanumeric, hyphen, or underscore" }, 400);
       if (repos.has(body.repo_handle)) return json({ detail: "exists" }, 409);
-      repos.set(body.repo_handle, { repo_handle: body.repo_handle, repo_type: "prompt", description: body.description ?? "", tags: body.tags ?? [], commits: [], commitTags: new Map() });
+      repos.set(body.repo_handle, {
+        repo_handle: body.repo_handle,
+        repo_type: "prompt",
+        description: body.description ?? "",
+        tags: body.tags ?? [],
+        commits: [],
+        commitTags: new Map(),
+      });
       return json({ repo: {} });
     }
     if (path === "/repos" && method === "GET") {
-      const all = [...repos.values()].map((r) => ({ repo_handle: r.repo_handle, repo_type: r.repo_type, commit_tags: [...r.commitTags.keys()] }));
+      const all = [...repos.values()].map((r) => ({
+        repo_handle: r.repo_handle,
+        repo_type: r.repo_type,
+        commit_tags: [...r.commitTags.keys()],
+      }));
       const offset = Number(url.searchParams.get("offset") ?? 0);
       return json({ repos: all.slice(offset, offset + Number(url.searchParams.get("limit"))), total: all.length });
     }
@@ -191,7 +225,9 @@ export function fakeLangSmith() {
       const repo = repos.get(m[1]!);
       if (!repo) return json({ detail: "not found" }, 404);
       if (method === "GET") {
-        return json([...repo.commitTags].map(([tag_name, id]) => ({ tag_name, commit_hash: repo.commits.find((c) => c.id === id)!.commit_hash })));
+        return json(
+          [...repo.commitTags].map(([tag_name, id]) => ({ tag_name, commit_hash: repo.commits.find((c) => c.id === id)!.commit_hash })),
+        );
       }
       if (!repo.commits.some((c) => c.id === body.commit_id)) return json({ detail: "commit_id must be a commit UUID" }, 422);
       const tag = method === "POST" ? body.tag_name : decodeURIComponent(m[2]!);
@@ -206,7 +242,8 @@ export function fakeLangSmith() {
         if (!repo) return json({ detail: "not found" }, 404);
         if (!body.manifest?.id) return json({ detail: "Manifest must have an id field" }, 400);
         const latest = repo.commits.at(-1);
-        if (latest && !repo.commits.some((c) => c.commit_hash === body.parent_commit)) return json({ detail: "Parent commit validation failed" }, 409);
+        if (latest && !repo.commits.some((c) => c.commit_hash === body.parent_commit))
+          return json({ detail: "Parent commit validation failed" }, 409);
         if (latest && JSON.stringify(latest.manifest) === JSON.stringify(body.manifest)) return json({ detail: "Nothing to commit" }, 409);
         const commit = { id: `uuid-${++counter}`, commit_hash: `${counter}`.padStart(64, "0"), manifest: body.manifest };
         repo.commits.push(commit);
@@ -219,10 +256,11 @@ export function fakeLangSmith() {
       const ref = decodeURIComponent(m[2]);
       const commit =
         ref === "latest" ? repo?.commits.at(-1) : repo?.commits.find((c) => c.commit_hash === ref || c.id === repo.commitTags.get(ref));
-      return commit ? json({ commit_hash: commit.commit_hash, manifest: commit.manifest, examples: [] }) : json({ detail: "Commit not found" }, 404);
+      return commit
+        ? json({ commit_hash: commit.commit_hash, manifest: commit.manifest, examples: [] })
+        : json({ detail: "Commit not found" }, 404);
     }
     return json({ detail: "no such route" }, 404);
   }) as typeof fetch;
   return { fetch: fetchImpl, repos };
 }
-

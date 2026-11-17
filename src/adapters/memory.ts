@@ -76,7 +76,11 @@ export function memory(): PlatformAdapter {
       const existing = stored.get(dataset.name) ?? { name: dataset.name, items: [] };
       const items = new Map(existing.items.map((item) => [item.id, item]));
       for (const item of dataset.items) items.set(item.id, structuredClone(item)); // upsert by id, keep the rest
-      stored.set(dataset.name, { ...existing, ...(dataset.description ? { description: dataset.description } : {}), items: [...items.values()] });
+      stored.set(dataset.name, {
+        ...existing,
+        ...(dataset.description ? { description: dataset.description } : {}),
+        items: [...items.values()],
+      });
     },
   };
 

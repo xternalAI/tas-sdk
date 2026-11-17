@@ -16,20 +16,26 @@ export const ARCHIVED_TAG = "archived";
 export const PROMPT_NAME = /^[a-z0-9][a-z0-9_-]*(\/[a-z0-9][a-z0-9_-]*)*$/;
 
 const strict = { additionalProperties: false } as const;
-const JsonObject = Type.Record(Type.String(), Type.Unknown());
-
 // The `description` on each field is what editors show on hover and in autocomplete for prompt
 // files, so these double as the user-facing reference for the format.
 const url = (what: string) =>
-  Type.String({ minLength: 1, description: `Where the ${what} is: an https URL, a data: URI, or a {{variable}} filled with either at call time.` });
+  Type.String({
+    minLength: 1,
+    description: `Where the ${what} is: an https URL, a data: URI, or a {{variable}} filled with either at call time.`,
+  });
 const Part = Type.Union(
   [
-    Type.Object({ type: Type.Literal("text"), text: Type.String({ description: "Text. Use {{name}} for variables." }) }, { ...strict, title: "Text" }),
+    Type.Object(
+      { type: Type.Literal("text"), text: Type.String({ description: "Text. Use {{name}} for variables." }) },
+      { ...strict, title: "Text" },
+    ),
     Type.Object(
       {
         type: Type.Literal("image"),
         url: url("image"),
-        detail: Type.Optional(Type.Enum(["low", "high", "auto"], { description: "How closely the model should look, where the provider supports it." })),
+        detail: Type.Optional(
+          Type.Enum(["low", "high", "auto"], { description: "How closely the model should look, where the provider supports it." }),
+        ),
       },
       { ...strict, title: "Image" },
     ),
@@ -38,7 +44,9 @@ const Part = Type.Union(
         type: Type.Literal("file"),
         url: url("file"),
         name: Type.Optional(Type.String({ description: "File name shown to the model, e.g. report.pdf. May contain {{variables}}." })),
-        mediaType: Type.Optional(Type.String({ description: 'MIME type, e.g. "application/pdf". Needed by some gateways for files given by URL.' })),
+        mediaType: Type.Optional(
+          Type.String({ description: 'MIME type, e.g. "application/pdf". Needed by some gateways for files given by URL.' }),
+        ),
       },
       { ...strict, title: "File" },
     ),
@@ -57,7 +65,12 @@ const Message = Type.Union([
     { ...strict, title: "Message" },
   ),
   Type.Object(
-    { placeholder: Type.String({ minLength: 1, description: "Name of a slot filled at call time with a list of messages, such as chat history or few-shot examples." }) },
+    {
+      placeholder: Type.String({
+        minLength: 1,
+        description: "Name of a slot filled at call time with a list of messages, such as chat history or few-shot examples.",
+      }),
+    },
     { ...strict, title: "Placeholder" },
   ),
 ]);
@@ -73,8 +86,16 @@ const Tool = Type.Object(
 
 const Model = Type.Object(
   {
-    id: Type.String({ minLength: 1, description: 'Model id as your gateway expects it, e.g. "gpt-5" or "anthropic/claude-sonnet-5-5". Map ids per gateway with `gateway.models`.' }),
-    params: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Sampling and limit settings, using OpenAI names: temperature, max_tokens, top_p, ..." })),
+    id: Type.String({
+      minLength: 1,
+      description:
+        'Model id as your gateway expects it, e.g. "gpt-5" or "anthropic/claude-sonnet-5-5". Map ids per gateway with `gateway.models`.',
+    }),
+    params: Type.Optional(
+      Type.Record(Type.String(), Type.Unknown(), {
+        description: "Sampling and limit settings, using OpenAI names: temperature, max_tokens, top_p, ...",
+      }),
+    ),
   },
   { ...strict, description: "Which model runs this prompt, and with what settings." },
 );
@@ -84,7 +105,9 @@ const attributes = {
   description: Type.Optional(Type.String({ description: "What this prompt is for." })),
   archived: Type.Optional(
     // Only `true` is allowed, so "not archived" has exactly one spelling: the key is absent.
-    Type.Literal(true, { description: "Retire the prompt without deleting it: the SDK refuses to serve it. Remove this line to restore it." }),
+    Type.Literal(true, {
+      description: "Retire the prompt without deleting it: the SDK refuses to serve it. Remove this line to restore it.",
+    }),
   ),
   model: Type.Optional(Model),
   tools: Type.Optional(Type.Array(Tool, { description: "Tools the model may call. Supply the functions when you run the prompt." })),
@@ -99,7 +122,9 @@ const attributes = {
     ),
   ),
   tags: Type.Optional(Type.Array(Type.String(), { description: "Labels for organising prompts." })),
-  metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Anything else you want stored with the prompt. Never read by the SDK." })),
+  metadata: Type.Optional(
+    Type.Record(Type.String(), Type.Unknown(), { description: "Anything else you want stored with the prompt. Never read by the SDK." }),
+  ),
 };
 const messages = Type.Array(Message, { minItems: 1, description: "The conversation template, in order." });
 const text = Type.String({ description: "The prompt text, sent as a single user message. Use {{name}} for variables." });
@@ -134,7 +159,10 @@ export type MessageContent = string | ContentPart[];
 
 /** True when any message of the prompt carries an image or a file. */
 export function hasAttachments(definition: PromptDefinition): boolean {
-  return definition.type === "chat" && definition.messages.some((m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type !== "text"));
+  return (
+    definition.type === "chat" &&
+    definition.messages.some((m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type !== "text"))
+  );
 }
 export type PromptTool = Type.Static<typeof Tool>;
 export type PromptModel = Type.Static<typeof Model>;
@@ -172,9 +200,12 @@ export function parsePrompt(input: unknown): PromptDefinition {
     if (error.schemaPath.includes("/anyOf/") && (error.keyword === "additionalProperties" || error.keyword === "required")) continue;
     const unknown = (error.params as { additionalProperties?: string[] }).additionalProperties;
     const where = error.instancePath.slice(1).replaceAll("/", ".") || "prompt";
-    const what = error.keyword === "pattern" && where === "name"
-      ? 'must be lowercase path segments, e.g. "support/triage"'
-      : unknown ? `unknown key ${unknown.map((k) => `"${k}"`).join(", ")}` : error.message;
+    const what =
+      error.keyword === "pattern" && where === "name"
+        ? 'must be lowercase path segments, e.g. "support/triage"'
+        : unknown
+          ? `unknown key ${unknown.map((k) => `"${k}"`).join(", ")}`
+          : error.message;
     byPath.set(where, what); // the last error at a path is the outermost, most readable one
   }
   throw new PromptValidationError([...byPath].map(([where, what]) => `${where}: ${what}`));

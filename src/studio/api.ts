@@ -1,11 +1,19 @@
 import { rm } from "node:fs/promises";
 import { createClient } from "../client.ts";
 import type { TasConfig } from "../config.ts";
-import { checkPortability, portabilityLevel, type PortabilityNote } from "../portability.ts";
-import { listPromptNames, loadPrompts, parsePromptFile, promptPath, readPromptSource, stringifyPrompt, writePrompt } from "../prompt/file.ts";
-import { PROMPT_NAME, PromptValidationError, type PromptDefinition } from "../prompt/model.ts";
-import { extractPlaceholders, extractVariables, renderPrompt, type RenderedMessage } from "../prompt/template.ts";
-import { pull, push, status, type SyncContext } from "../sync.ts";
+import { checkPortability, type PortabilityNote, portabilityLevel } from "../portability.ts";
+import {
+  listPromptNames,
+  loadPrompts,
+  parsePromptFile,
+  promptPath,
+  readPromptSource,
+  stringifyPrompt,
+  writePrompt,
+} from "../prompt/file.ts";
+import { PROMPT_NAME, type PromptDefinition, PromptValidationError } from "../prompt/model.ts";
+import { extractPlaceholders, extractVariables, type RenderedMessage, renderPrompt } from "../prompt/template.ts";
+import { pull, push, type SyncContext, status } from "../sync.ts";
 
 /**
  * The studio's API: everything its page can do, as one function from a request to a response.
@@ -81,7 +89,14 @@ export function inspectPrompt(name: string, source: string): PromptDetail {
 }
 
 const STARTERS: Record<"chat" | "text", (name: string) => PromptDefinition> = {
-  chat: (name) => ({ type: "chat", name, messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "{{input}}" }] }),
+  chat: (name) => ({
+    type: "chat",
+    name,
+    messages: [
+      { role: "system", content: "You are a helpful assistant." },
+      { role: "user", content: "{{input}}" },
+    ],
+  }),
   text: (name) => ({ type: "text", name, text: "{{input}}" }),
 };
 
@@ -92,7 +107,8 @@ export function createStudioApi(ctx: StudioContext): (request: ApiRequest) => Pr
     return { dir: ctx.dir, registry, platform: ctx.config.platform.id, canonical: ctx.config.canonical ?? "repo", target: ctx.target };
   };
   const requireName = (name: string) => {
-    if (!PROMPT_NAME.test(name)) throw new ApiError(400, `"${name}" is not a valid prompt name: use lowercase path segments such as "support/triage"`);
+    if (!PROMPT_NAME.test(name))
+      throw new ApiError(400, `"${name}" is not a valid prompt name: use lowercase path segments such as "support/triage"`);
     return name;
   };
   const detail = async (name: string): Promise<PromptDetail> => {
@@ -100,7 +116,8 @@ export function createStudioApi(ctx: StudioContext): (request: ApiRequest) => Pr
     if (source === undefined) throw new ApiError(404, `no prompt "${name}"`);
     return inspectPrompt(name, source);
   };
-  const field = <T>(body: unknown, key: string): T | undefined => (body && typeof body === "object" ? ((body as Record<string, unknown>)[key] as T | undefined) : undefined);
+  const field = <T>(body: unknown, key: string): T | undefined =>
+    body && typeof body === "object" ? ((body as Record<string, unknown>)[key] as T | undefined) : undefined;
 
   const routes: Record<string, (request: ApiRequest, name: string) => Promise<unknown>> = {
     "GET /api/info": async () => ({
@@ -116,7 +133,14 @@ export function createStudioApi(ctx: StudioContext): (request: ApiRequest) => Pr
       return Promise.all(
         names.map(async (name) => {
           const d = await detail(name);
-          return { name, type: d.definition?.type ?? null, description: d.definition?.description ?? null, archived: d.definition?.archived === true, valid: d.definition !== null, level: d.level };
+          return {
+            name,
+            type: d.definition?.type ?? null,
+            description: d.definition?.description ?? null,
+            archived: d.definition?.archived === true,
+            valid: d.definition !== null,
+            level: d.level,
+          };
         }),
       );
     },
@@ -153,7 +177,8 @@ export function createStudioApi(ctx: StudioContext): (request: ApiRequest) => Pr
       try {
         const messages = renderPrompt(checked.definition, {
           variables: field<Record<string, unknown>>(body, "variables") ?? {},
-          placeholders: field<Record<string, RenderedMessage[]>>(body, "placeholders") ?? Object.fromEntries(checked.placeholders.map((p) => [p, []])),
+          placeholders:
+            field<Record<string, RenderedMessage[]>>(body, "placeholders") ?? Object.fromEntries(checked.placeholders.map((p) => [p, []])),
         });
         return { messages };
       } catch (error) {
@@ -161,12 +186,22 @@ export function createStudioApi(ctx: StudioContext): (request: ApiRequest) => Pr
       }
     },
 
-    "GET /api/status": async () => (await status(syncContext())).map(({ name, state, error, nonPortable }) => ({ name, state, ...(error ? { error } : {}), ...(nonPortable ? { nonPortable } : {}) })),
+    "GET /api/status": async () =>
+      (await status(syncContext())).map(({ name, state, error, nonPortable }) => ({
+        name,
+        state,
+        ...(error ? { error } : {}),
+        ...(nonPortable ? { nonPortable } : {}),
+      })),
 
     "POST /api/push": async ({ body }) => {
       const names = field<string[]>(body, "names");
       const labels = field<string[]>(body, "labels");
-      return push(syncContext(), { force: field(body, "force") === true, ...(names ? { only: names } : {}), ...(labels?.length ? { labels } : {}) });
+      return push(syncContext(), {
+        force: field(body, "force") === true,
+        ...(names ? { only: names } : {}),
+        ...(labels?.length ? { labels } : {}),
+      });
     },
 
     "POST /api/pull": async ({ body }) => {

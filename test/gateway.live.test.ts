@@ -20,22 +20,47 @@ const { TAS_LIVE_GATEWAY_URL: baseURL, TAS_LIVE_GATEWAY_MODEL: model, TAS_LIVE_G
 
 describe.skipIf(process.env.TAS_LIVE !== "1" || !baseURL || !model)("invocation (live gateway)", { timeout: 300_000 }, () => {
   const prompts: PromptDefinition[] = [
-    { type: "chat", name: "ping", model: { id: "test-model", params: { temperature: 0 } }, messages: [{ role: "user", content: "Reply with the single word {{word}} and nothing else." }] },
+    {
+      type: "chat",
+      name: "ping",
+      model: { id: "test-model", params: { temperature: 0 } },
+      messages: [{ role: "user", content: "Reply with the single word {{word}} and nothing else." }],
+    },
     {
       type: "chat",
       name: "triage",
       model: { id: "test-model", params: { temperature: 0 } },
-      messages: [{ role: "system", content: "Classify the support ticket into a queue." }, { role: "user", content: "{{ticket}}" }],
-      output: { name: "triage", schema: { type: "object", properties: { queue: { type: "string", enum: ["billing", "technical"] } }, required: ["queue"] } },
+      messages: [
+        { role: "system", content: "Classify the support ticket into a queue." },
+        { role: "user", content: "{{ticket}}" },
+      ],
+      output: {
+        name: "triage",
+        schema: { type: "object", properties: { queue: { type: "string", enum: ["billing", "technical"] } }, required: ["queue"] },
+      },
     },
     {
       type: "chat",
       name: "weather",
       model: { id: "test-model", params: { temperature: 0 } },
-      messages: [{ role: "system", content: "Always call the get_weather tool before answering a weather question, then answer in one sentence." }, { role: "user", content: "What is the weather in {{city}}?" }],
-      tools: [{ name: "get_weather", description: "Get the current weather for a city", parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] } }],
+      messages: [
+        { role: "system", content: "Always call the get_weather tool before answering a weather question, then answer in one sentence." },
+        { role: "user", content: "What is the weather in {{city}}?" },
+      ],
+      tools: [
+        {
+          name: "get_weather",
+          description: "Get the current weather for a city",
+          parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        },
+      ],
     },
-    { type: "chat", name: "assistant", model: { id: "test-model", params: { temperature: 0 } }, messages: [{ role: "system", content: "You are a concise assistant. Answer in a few words." }] },
+    {
+      type: "chat",
+      name: "assistant",
+      model: { id: "test-model", params: { temperature: 0 } },
+      messages: [{ role: "system", content: "You are a concise assistant. Answer in a few words." }],
+    },
   ];
   const client = createClient({
     platform: memory(),
@@ -83,7 +108,10 @@ describe.skipIf(process.env.TAS_LIVE !== "1" || !baseURL || !model)("invocation 
   });
 
   it("streams a tool round-trip: call, result, then the answer", async () => {
-    const stream = client.stream("weather", { variables: { city: "Riga" }, tools: { get_weather: () => ({ temperature_c: -27, conditions: "blizzard" }) } });
+    const stream = client.stream("weather", {
+      variables: { city: "Riga" },
+      tools: { get_weather: () => ({ temperature_c: -27, conditions: "blizzard" }) },
+    });
     const kinds: string[] = [];
     for await (const event of stream) if (kinds.at(-1) !== event.type) kinds.push(event.type);
     const result = await stream.result;
@@ -109,11 +137,31 @@ describe.skipIf(process.env.TAS_LIVE !== "1" || !baseURL || !model)("invocation 
     header.writeUInt32BE(64, 4);
     header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
     const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(64 * 3).map((_, i) => (i % 3 === 0 ? 255 : 0))]);
-    const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(Buffer.concat(Array(64).fill(row)))), chunk("IEND", Buffer.alloc(0))]);
+    const png = Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk("IHDR", header),
+      chunk("IDAT", deflateSync(Buffer.concat(Array(64).fill(row)))),
+      chunk("IEND", Buffer.alloc(0)),
+    ]);
 
     const vision = createClient({
       platform: memory(),
-      prompts: [{ type: "chat", name: "colour", model: { id: "test-model", params: { temperature: 0 } }, messages: [{ role: "user", content: [{ type: "text", text: "What single colour fills this image? Answer with one word." }, { type: "image", url: "{{image}}" }] }] }],
+      prompts: [
+        {
+          type: "chat",
+          name: "colour",
+          model: { id: "test-model", params: { temperature: 0 } },
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "What single colour fills this image? Answer with one word." },
+                { type: "image", url: "{{image}}" },
+              ],
+            },
+          ],
+        },
+      ],
       gateway: { baseURL: baseURL!, ...(apiKey ? { apiKey } : {}), models: { "test-model": model! } },
     });
     const result = await vision.run("colour", { variables: { image: dataUrl(png, "image/png") } });

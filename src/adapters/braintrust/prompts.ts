@@ -10,16 +10,16 @@ import { isDeepStrictEqual } from "node:util";
 import {
   ENVELOPE_KEY,
   fingerprint,
+  type PromptRegistry,
   packEnvelope,
+  type RemotePrompt,
   tagsWithArchiveMarker,
   tagsWithoutArchiveMarker,
   unpackEnvelope,
-  type PromptRegistry,
-  type RemotePrompt,
 } from "../../adapter.ts";
+import { hashPrompt, type PromptDefinition, type PromptMessage, parsePrompt } from "../../prompt/model.ts";
 import { fromOpenAIContent, toOpenAIContent } from "../../prompt/parts.ts";
-import { hashPrompt, parsePrompt, type PromptDefinition, type PromptMessage } from "../../prompt/model.ts";
-import { fromOpenAITools, fromResponseFormat, PlatformError, toOpenAITools, toResponseFormat, type OpenAITool } from "../shared.ts";
+import { fromOpenAITools, fromResponseFormat, type OpenAITool, PlatformError, toOpenAITools, toResponseFormat } from "../shared.ts";
 import type { BraintrustContext, ErrorFactory } from "./context.ts";
 
 /** The parts of a Braintrust prompt row this adapter reads and writes. */
@@ -277,7 +277,7 @@ async function listPrompts(context: BraintrustContext): Promise<{ name: string; 
     });
     const named = page.objects.map((row) => ({ row, name: row.slug })).filter(({ name }) => NAME.test(name));
     const labels = await Promise.all(named.map(({ row }) => assignments(context, row.id)));
-    named.forEach(({ name }, i) => out.push({ name, labels: labels[i]!.map((a) => a.environment_slug) }));
+    for (const [i, { name }] of named.entries()) out.push({ name, labels: labels[i]!.map((a) => a.environment_slug) });
     after = page.objects.at(-1)?.id;
     if (page.objects.length < 100 || !after) return out;
   }

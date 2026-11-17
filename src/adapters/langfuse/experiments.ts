@@ -5,7 +5,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { EvalRow, ExperimentReporter, ExperimentResult } from "../../eval.ts";
-import { asText, toOtlp, type SpanRecord, type TraceExporter } from "../../trace.ts";
+import { asText, type SpanRecord, type TraceExporter, toOtlp } from "../../trace.ts";
 import type { Http } from "../shared.ts";
 import type { LangfuseContext } from "./context.ts";
 import { remoteItemId, upsertDataset } from "./datasets.ts";
@@ -87,7 +87,8 @@ async function sendTraces(
   );
   const headers = { "content-type": "application/json", ...tracing.headers };
   const sent = await http.fetch(tracing.url, { method: "POST", headers, body: JSON.stringify(body) });
-  if (!sent.ok) throw new LangfuseError(`langfuse experiment traces rejected: ${sent.status} ${(await sent.text()).slice(0, 200)}`, sent.status);
+  if (!sent.ok)
+    throw new LangfuseError(`langfuse experiment traces rejected: ${sent.status} ${(await sent.text()).slice(0, 200)}`, sent.status);
 }
 
 /** Attach each row's scores to its trace, one call per score. */

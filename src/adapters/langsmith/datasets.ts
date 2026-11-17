@@ -27,7 +27,11 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 export const asObject = (value: unknown, key: string) => (isObject(value) ? value : { [key]: value ?? null });
 /** A UUID derived from the dataset and item id, so the same item is the same example on every push. */
 export const exampleId = (dataset: string, id: string) =>
-  createHash("sha256").update(`${dataset}\n${id}`).digest("hex").slice(0, 32).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+  createHash("sha256")
+    .update(`${dataset}\n${id}`)
+    .digest("hex")
+    .slice(0, 32)
+    .replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
 
 /** The dataset with exactly this name, if there is one. */
 export async function findDataset(ctx: LangSmithContext, name: string): Promise<RemoteDataset | undefined> {
@@ -50,7 +54,8 @@ function toItem(example: Example): DatasetItem {
   // `dataset_split` is added by LangSmith itself. Neither is the user's metadata.
   const { [ENVELOPE_KEY]: ours, dataset_split: _split, ...metadata } = example.metadata ?? {};
   const note = (ours ?? {}) as { id?: string; wrapped?: string[] };
-  const unwrap = (value: Record<string, unknown> | null | undefined, key: string) => (value && note.wrapped?.includes(key) ? value[key] : value);
+  const unwrap = (value: Record<string, unknown> | null | undefined, key: string) =>
+    value && note.wrapped?.includes(key) ? value[key] : value;
   const expected = unwrap(example.outputs, "output");
   return {
     id: note.id ?? example.id,
@@ -62,7 +67,10 @@ function toItem(example: Example): DatasetItem {
 
 /** An item as the example to store, with a note in its metadata of what `toItem` has to undo. */
 function toExample(datasetName: string, datasetId: string, item: DatasetItem) {
-  const wrapped = [...(isObject(item.input) ? [] : ["input"]), ...(item.expected === undefined || isObject(item.expected) ? [] : ["output"])];
+  const wrapped = [
+    ...(isObject(item.input) ? [] : ["input"]),
+    ...(item.expected === undefined || isObject(item.expected) ? [] : ["output"]),
+  ];
   return {
     id: exampleId(datasetName, item.id!),
     dataset_id: datasetId,
@@ -92,7 +100,9 @@ async function pullDataset(ctx: LangSmithContext, name: string): Promise<Dataset
 async function findOrCreateDataset(ctx: LangSmithContext, dataset: Dataset): Promise<RemoteDataset> {
   const found = await findDataset(ctx, dataset.name);
   if (found) return found;
-  await ctx.http.find("POST", "/datasets", { body: { name: dataset.name, ...(dataset.description ? { description: dataset.description } : {}) } });
+  await ctx.http.find("POST", "/datasets", {
+    body: { name: dataset.name, ...(dataset.description ? { description: dataset.description } : {}) },
+  });
   const created = await findDataset(ctx, dataset.name);
   if (!created) throw new LangSmithError(`langsmith: dataset "${dataset.name}" could not be created`);
   return created;

@@ -22,12 +22,25 @@ export const LIVE = e.TAS_LIVE === "1";
 /** The platforms there are credentials for. `langsmithProject` is the tracing project spans go to. */
 export function liveTargets(options: { langsmithProject?: string } = {}): PlatformAdapter[] {
   const targets: PlatformAdapter[] = [];
-  if (e.BRAINTRUST_API_KEY && e.TAS_LIVE_PROJECT) targets.push(braintrust({ apiKey: e.BRAINTRUST_API_KEY, projectName: e.TAS_LIVE_PROJECT }));
+  if (e.BRAINTRUST_API_KEY && e.TAS_LIVE_PROJECT)
+    targets.push(braintrust({ apiKey: e.BRAINTRUST_API_KEY, projectName: e.TAS_LIVE_PROJECT }));
   if (e.LANGFUSE_PUBLIC_KEY && e.LANGFUSE_SECRET_KEY) {
-    targets.push(langfuse({ publicKey: e.LANGFUSE_PUBLIC_KEY, secretKey: e.LANGFUSE_SECRET_KEY, ...(e.LANGFUSE_BASE_URL ? { baseURL: e.LANGFUSE_BASE_URL } : {}) }));
+    targets.push(
+      langfuse({
+        publicKey: e.LANGFUSE_PUBLIC_KEY,
+        secretKey: e.LANGFUSE_SECRET_KEY,
+        ...(e.LANGFUSE_BASE_URL ? { baseURL: e.LANGFUSE_BASE_URL } : {}),
+      }),
+    );
   }
   if (e.LANGSMITH_API_KEY) {
-    targets.push(langsmith({ apiKey: e.LANGSMITH_API_KEY, ...(e.LANGSMITH_BASE_URL ? { baseURL: e.LANGSMITH_BASE_URL } : {}), ...(options.langsmithProject ? { project: options.langsmithProject } : {}) }));
+    targets.push(
+      langsmith({
+        apiKey: e.LANGSMITH_API_KEY,
+        ...(e.LANGSMITH_BASE_URL ? { baseURL: e.LANGSMITH_BASE_URL } : {}),
+        ...(options.langsmithProject ? { project: options.langsmithProject } : {}),
+      }),
+    );
   }
   return targets;
 }

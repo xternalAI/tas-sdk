@@ -29,9 +29,7 @@ export function createMasker(config: MaskingConfig | undefined): Masker {
     typeof k === "string" ? (key: string) => key.toLowerCase() === k.toLowerCase() : (key: string) => k.test(key),
   );
   // Global regexes carry lastIndex state; clone so callers' instances are never mutated.
-  const patterns = (config.patterns ?? []).map(
-    (p) => new RegExp(p.source, p.flags.includes("g") ? p.flags : `${p.flags}g`),
-  );
+  const patterns = (config.patterns ?? []).map((p) => new RegExp(p.source, p.flags.includes("g") ? p.flags : `${p.flags}g`));
 
   const walk = (value: unknown, path: string[], seen: WeakSet<object>): unknown => {
     if (typeof value === "string") {

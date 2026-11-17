@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadPrompts,
   memory,
+  type PromptDefinition,
+  type PromptRegistry,
   parsePromptFile,
   promptFileSchema,
   promptPath,
@@ -14,8 +16,6 @@ import {
   validateSchema,
   writePrompt,
   writePromptSchema,
-  type PromptDefinition,
-  type PromptRegistry,
 } from "../src/index.ts";
 import { cli, SDK } from "./cli.ts";
 import { fixtures } from "./conformance.ts";
@@ -39,7 +39,9 @@ describe("prompt files", () => {
     const path = await writePrompt(dir, def);
     expect(path).toBe(promptPath(dir, "a/b/c"));
     // The first line points editors at the schema, relative to the file, however deep it is.
-    expect(await readFile(path, "utf8")).toBe("# yaml-language-server: $schema=../../prompt.schema.json\ntext: |\n  line one\n  line two {{x}}\n");
+    expect(await readFile(path, "utf8")).toBe(
+      "# yaml-language-server: $schema=../../prompt.schema.json\ntext: |\n  line one\n  line two {{x}}\n",
+    );
     await writePrompt(dir, greet);
     expect(await loadPrompts(dir)).toEqual([def, greet]);
     expect(await loadPrompts(join(dir, "missing"))).toEqual([]);
@@ -102,8 +104,14 @@ describe("sync", () => {
     await registry.push(fixtures[1]!);
     expect(await states()).toEqual({ plain: "remote-only", "team/greet": "local-only" });
 
-    expect(await sync.push(ctx("repo"))).toMatchObject([{ name: "plain", action: "skipped" }, { name: "team/greet", action: "pushed" }]);
-    expect(await sync.pull(ctx("repo"))).toMatchObject([{ name: "plain", action: "pulled" }, { name: "team/greet", action: "unchanged" }]);
+    expect(await sync.push(ctx("repo"))).toMatchObject([
+      { name: "plain", action: "skipped" },
+      { name: "team/greet", action: "pushed" },
+    ]);
+    expect(await sync.pull(ctx("repo"))).toMatchObject([
+      { name: "plain", action: "pulled" },
+      { name: "team/greet", action: "unchanged" },
+    ]);
     expect(await states()).toEqual({ plain: "in-sync", "team/greet": "in-sync" });
     expect((await sync.push(ctx("repo"))).map((r) => r.action)).toEqual(["unchanged", "unchanged"]);
     expect(await loadPrompts(dir)).toEqual([fixtures[1], greet]);
@@ -165,7 +173,9 @@ describe("sync", () => {
     const loopy: PromptDefinition = { type: "text", name: "loopy", text: "{{#items}}{{name}}{{/items}}" };
     await writePrompt(dir, loopy);
     expect(await sync.status(ctx("repo"))).toMatchObject([{ name: "loopy", nonPortable: ["{{#items}}", "{{/items}}"] }]);
-    expect(await sync.push(ctx("repo"))).toMatchObject([{ action: "refused", reason: "non-portable", nonPortable: ["{{#items}}", "{{/items}}"] }]);
+    expect(await sync.push(ctx("repo"))).toMatchObject([
+      { action: "refused", reason: "non-portable", nonPortable: ["{{#items}}", "{{/items}}"] },
+    ]);
     expect(await registry.get({ name: "loopy" })).toBeNull();
     expect(await sync.push(ctx("repo"), { force: true })).toMatchObject([{ action: "pushed", nonPortable: ["{{#items}}", "{{/items}}"] }]);
 
@@ -218,7 +228,10 @@ describe("cli", () => {
     expect(await loadPrompts(join(dir, "p"))).toEqual([]);
     expect((await run(["prompts", "delete"])).out).toMatch(/needs at least one prompt name/);
 
-    expect(await run(["prompts", "status", "--profile", "nope"])).toMatchObject({ code: 1, out: expect.stringMatching(/no profile "nope"/) });
+    expect(await run(["prompts", "status", "--profile", "nope"])).toMatchObject({
+      code: 1,
+      out: expect.stringMatching(/no profile "nope"/),
+    });
     expect((await run(["bogus"])).code).toBe(2);
   });
 });

@@ -13,9 +13,7 @@ export const fixtures: PromptDefinition[] = [
       { placeholder: "history" },
       { role: "user", content: "{{ticket.body}}" },
     ],
-    tools: [
-      { name: "lookup_order", description: "Find an order", parameters: { type: "object", properties: { id: { type: "string" } } } },
-    ],
+    tools: [{ name: "lookup_order", description: "Find an order", parameters: { type: "object", properties: { id: { type: "string" } } } }],
     output: { name: "triage", schema: { type: "object", properties: { queue: { type: "string" } } }, strict: true },
     tags: ["support"],
     metadata: { owner: "cx-team" },
@@ -71,7 +69,7 @@ export function conformance(make: () => PromptRegistry, options: ConformanceOpti
 
   it("versions are immutable", async () => {
     const reg = make();
-    const def: PromptDefinition = { ...cases[1]!, name: cases[1]!.name + "-versions" };
+    const def: PromptDefinition = { ...cases[1]!, name: `${cases[1]!.name}-versions` };
     const v1 = await reg.push(def);
     const v2 = await reg.push({ ...def, description: "second" });
     expect(v2.version).not.toBe(v1.version);
@@ -82,7 +80,7 @@ export function conformance(make: () => PromptRegistry, options: ConformanceOpti
   it.skipIf(!labels)("labels point at a version and can be moved", async () => {
     const reg = make();
     const [prod, staging] = labels!;
-    const def: PromptDefinition = { ...cases[1]!, name: cases[1]!.name + "-labels" };
+    const def: PromptDefinition = { ...cases[1]!, name: `${cases[1]!.name}-labels` };
     const v1 = await reg.push(def, { labels: [prod] });
     const v2 = await reg.push({ ...def, description: "second" }, { labels: [staging] });
     expect((await reg.get({ name: def.name, label: prod }))!.version).toBe(v1.version);
@@ -98,7 +96,7 @@ export function conformance(make: () => PromptRegistry, options: ConformanceOpti
 
   it("archiving is a version like any other, and removing the flag restores the prompt", async () => {
     const reg = make();
-    const def: PromptDefinition = { ...cases[0]!, name: cases[0]!.name + "-archive" };
+    const def: PromptDefinition = { ...cases[0]!, name: `${cases[0]!.name}-archive` };
     const live = await reg.push(def);
     const archived = await reg.push({ ...def, archived: true });
     expect(archived.version).not.toBe(live.version);
@@ -111,7 +109,7 @@ export function conformance(make: () => PromptRegistry, options: ConformanceOpti
 
   it("delete removes a prompt and all its versions, and is a no-op when there is nothing to delete", async () => {
     const reg = make();
-    const def: PromptDefinition = { ...cases[1]!, name: cases[1]!.name + "-delete" };
+    const def: PromptDefinition = { ...cases[1]!, name: `${cases[1]!.name}-delete` };
     const v1 = await reg.push(def);
     await reg.push({ ...def, description: "second" });
     await reg.delete(def.name);
@@ -124,10 +122,10 @@ export function conformance(make: () => PromptRegistry, options: ConformanceOpti
 
   it("returns null for unknown prompts and lists known ones", async () => {
     const reg = make();
-    expect(await reg.get({ name: (options.prefix ?? "") + "missing" })).toBeNull();
+    expect(await reg.get({ name: `${options.prefix ?? ""}missing` })).toBeNull();
     if (labels) {
-      expect(await reg.get({ name: (options.prefix ?? "") + "missing", label: labels[0] })).toBeNull();
-      const unlabelled = await reg.push({ ...cases[1]!, name: cases[1]!.name + "-unlabelled" });
+      expect(await reg.get({ name: `${options.prefix ?? ""}missing`, label: labels[0] })).toBeNull();
+      const unlabelled = await reg.push({ ...cases[1]!, name: `${cases[1]!.name}-unlabelled` });
       expect(await reg.get({ name: unlabelled.definition.name, label: labels[0] })).toBeNull();
     }
     for (const def of cases) await reg.push(def);
@@ -169,14 +167,22 @@ export function datasetConformance(make: () => import("../src/index.ts").Dataset
       const pulled = (await store.pull(name))!;
       expect(pulled.name).toBe(name);
       expect(pulled.description).toBe("Round trip");
-      expect([...pulled.items].sort((a, b) => a.id!.localeCompare(b.id!))).toEqual([...datasetItems].sort((a, b) => a.id.localeCompare(b.id)));
+      expect([...pulled.items].sort((a, b) => a.id!.localeCompare(b.id!))).toEqual(
+        [...datasetItems].sort((a, b) => a.id.localeCompare(b.id)),
+      );
     }, settleMs);
   });
 
   it("pushing again updates items by id, adds new ones, and leaves the rest", async () => {
     const store = make();
     await store.push({ name, items: datasetItems });
-    await store.push({ name, items: [{ id: "plain", input: "a bare string", expected: 5 }, { id: "added", input: { new: true } }] });
+    await store.push({
+      name,
+      items: [
+        { id: "plain", input: "a bare string", expected: 5 },
+        { id: "added", input: { new: true } },
+      ],
+    });
     await eventually(async () => {
       const byId = new Map((await store.pull(name))!.items.map((item) => [item.id, item]));
       expect(byId.size).toBe(datasetItems.length + 1);

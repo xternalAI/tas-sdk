@@ -87,7 +87,11 @@ export function toOpenAITools(tools: PromptTool[]): OpenAITool[] {
 /** The reverse of `toOpenAITools`. `undefined` or an empty list gives `undefined`, since "no tools" has one spelling. */
 export function fromOpenAITools(tools: OpenAITool[] | null | undefined): PromptTool[] | undefined {
   if (!tools?.length) return undefined;
-  return tools.map(({ function: fn }) => ({ name: fn.name, ...(fn.description ? { description: fn.description } : {}), parameters: fn.parameters ?? {} }));
+  return tools.map(({ function: fn }) => ({
+    name: fn.name,
+    ...(fn.description ? { description: fn.description } : {}),
+    parameters: fn.parameters ?? {},
+  }));
 }
 
 type Output = NonNullable<PromptDefinition["output"]>;
@@ -98,7 +102,11 @@ const DEFAULT_OUTPUT_NAME = "output";
 export function toResponseFormat(output: Output): Record<string, unknown> {
   return {
     type: "json_schema",
-    json_schema: { name: output.name ?? DEFAULT_OUTPUT_NAME, schema: output.schema, ...(output.strict === undefined ? {} : { strict: output.strict }) },
+    json_schema: {
+      name: output.name ?? DEFAULT_OUTPUT_NAME,
+      schema: output.schema,
+      ...(output.strict === undefined ? {} : { strict: output.strict }),
+    },
   };
 }
 
@@ -108,7 +116,8 @@ export function toResponseFormat(output: Output): Record<string, unknown> {
  */
 export function fromResponseFormat(format: unknown): { output?: Output; other?: unknown } {
   if (format === undefined || format === null) return {};
-  const schema = (format as { type?: string; json_schema?: { name?: string; schema?: Record<string, unknown>; strict?: boolean } }).json_schema;
+  const schema = (format as { type?: string; json_schema?: { name?: string; schema?: Record<string, unknown>; strict?: boolean } })
+    .json_schema;
   if ((format as { type?: string }).type !== "json_schema" || !schema) return { other: format };
   return {
     output: {
