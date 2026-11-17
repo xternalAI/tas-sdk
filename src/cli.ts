@@ -7,8 +7,10 @@ import { createClient } from "./client.ts";
 import type { TasConfig, TasProfiles } from "./config.ts";
 import { DATASET_EXTENSION, pullDataset, pushDataset } from "./dataset.ts";
 import type { EvalDefinition } from "./eval.ts";
+import { checkPortability } from "./portability.ts";
 import { loadPrompts, writePromptSchema } from "./prompt/file.ts";
 import { generatePromptTypes } from "./prompt/types.ts";
+import { startStudio } from "./studio/server.ts";
 import { pull, push, remove, status, type SyncContext, type SyncResult } from "./sync.ts";
 
 /**
@@ -19,9 +21,12 @@ import { pull, push, remove, status, type SyncContext, type SyncResult } from ".
  * Each command is one entry in `COMMANDS`. To add a command, add an entry and a line to `USAGE`.
  */
 
-export const USAGE = `tas prompts <status|pull|push|delete|schema|types> [names...]
+export const USAGE = `tas prompts <status|check|pull|push|delete|schema|types> [names...]
 
   status   compare prompt files with the platform
+  check    say what each prompt would not store natively on Braintrust, Langfuse and
+           LangSmith, without contacting any of them. Exits 1 if a prompt cannot be
+           stored somewhere at all.
   pull     platform -> files
   push     files -> platform
   delete   permanently delete the named prompts: every version on the platform,
@@ -39,6 +44,11 @@ tas datasets <list|pull|push> [names...]
            rows only your file has are kept. No names: every dataset on the platform.
   push     file -> platform, upserting items by id. No names: every dataset file.
 
+tas studio
+
+  Open a local web page for browsing and editing the prompt files, with live validation,
+  per-platform portability notes, sync and a way to try a prompt. Serves on this machine only.
+
 tas eval <files...>
 
   Run evaluations. Each file's default export is defineEval({...}), an array of them, or a
@@ -51,6 +61,7 @@ Options
   --force            let the non-canonical side overwrite the canonical one, and push
                      prompts that use non-portable template syntax
   --yes              delete: confirm. Without it, delete only lists what it would remove
+  --port <number>    studio: port to serve on (default 4983)
 `;
 
 export interface CliIO {
@@ -60,6 +71,8 @@ export interface CliIO {
   log: (line: string) => void;
   /** Receives error lines. Default: console.error. */
   error: (line: string) => void;
+  /** Stops a long-running command (the studio). Default: Ctrl-C. */
+  signal?: AbortSignal;
 }
 
 interface Flags {
@@ -68,6 +81,7 @@ interface Flags {
   label: string[] | undefined;
   force: boolean;
   yes: boolean;
+  port: string | undefined;
 }
 
 /** Everything a command needs. */
@@ -146,6 +160,19 @@ const promptCommands: Record<string, Command> = {
     }
     if (!entries.length) inv.io.log("no prompts");
     return 0;
+  },
+
+  async check(inv) {
+    const definitions = (await loadPrompts(promptsDir(inv))).filter((def) => !inv.args.length || inv.args.includes(def.name));
+    let blocked = false;
+    for (const def of definitions) {
+      const notes = checkPortability(def);
+      inv.io.log(`${notes.some((n) => n.level === "error") ? "error  " : notes.some((n) => n.level === "warning") ? "warning" : "ok     "} ${def.name}`);
+      for (const note of notes) inv.io.log(`        ${note.level.padEnd(7)} ${note.platform === "all" ? "every platform" : note.platform}: ${note.message}`);
+      blocked ||= notes.some((n) => n.level === "error");
+    }
+    if (!definitions.length) inv.io.log("no prompts");
+    return blocked ? 1 : 0;
   },
 
   async pull(inv) {
@@ -270,6 +297,25 @@ async function runEvals(inv: Invocation): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// studio
+// ---------------------------------------------------------------------------------------------
+
+/** Serve the studio until the command is stopped. */
+async function runStudio(inv: Invocation): Promise<number> {
+  const port = inv.flags.port === undefined ? undefined : Number(inv.flags.port);
+  if (port !== undefined && !(Number.isInteger(port) && port >= 0 && port < 65536)) throw new UsageError(`--port must be a port number, got "${inv.flags.port}"`);
+  const studio = await startStudio({ config: inv.config, dir: promptsDir(inv), target: inv.target }, port === undefined ? {} : { port });
+  inv.io.log(`Studio is running at ${studio.url}`);
+  inv.io.log(`Editing ${promptsDir(inv)} (platform: ${inv.config.platform.id}). Press Ctrl-C to stop.`);
+  await new Promise<void>((resolve) => {
+    if (inv.io.signal) inv.io.signal.addEventListener("abort", () => resolve(), { once: true });
+    else process.once("SIGINT", () => resolve());
+  });
+  await studio.close();
+  return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
 // entry
 // ---------------------------------------------------------------------------------------------
 
@@ -278,11 +324,17 @@ const GROUPS: Record<string, Record<string, Command> | Command> = {
   prompts: promptCommands,
   datasets: datasetCommands,
   eval: runEvals,
+  studio: runStudio,
 };
 
 /** Run the CLI. Returns the exit code: 0 ok, 1 failed or refused, 2 not a valid command. */
 export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<number> {
-  const out: CliIO = { cwd: io.cwd ?? process.cwd(), log: io.log ?? ((line) => console.log(line)), error: io.error ?? ((line) => console.error(line)) };
+  const out: CliIO = {
+    cwd: io.cwd ?? process.cwd(),
+    log: io.log ?? ((line) => console.log(line)),
+    error: io.error ?? ((line) => console.error(line)),
+    ...(io.signal ? { signal: io.signal } : {}),
+  };
   try {
     const { values, positionals } = parseArgs({
       args: argv,
@@ -293,6 +345,7 @@ export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<n
         label: { type: "string", multiple: true },
         force: { type: "boolean", default: false },
         yes: { type: "boolean", default: false },
+        port: { type: "string" },
         help: { type: "boolean", short: "h", default: false },
       },
     });
@@ -306,7 +359,7 @@ export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<n
     const { config, target } = await loadConfig(out.cwd, values.config, values.profile);
     return await command({
       args: typeof group === "function" ? rest : rest.slice(1),
-      flags: { config: values.config, profile: values.profile, label: values.label, force: values.force, yes: values.yes },
+      flags: { config: values.config, profile: values.profile, label: values.label, force: values.force, yes: values.yes, port: values.port },
       io: out,
       config,
       target,

@@ -6,6 +6,7 @@ export * from "./eval.ts";
 export * from "./gateway.ts";
 export * from "./http.ts";
 export * from "./masking.ts";
+export * from "./portability.ts";
 export * from "./prompt/model.ts";
 export * from "./prompt/parts.ts";
 export * from "./prompt/template.ts";
