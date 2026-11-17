@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createClient, memory, type PromptDefinition } from "../src/index.ts";
+import { createClient, dataUrl, memory, type PromptDefinition } from "../src/index.ts";
 
 /**
  * Runs invocation against a real OpenAI-compatible endpoint. Opt-in: only via `pnpm test:live`,
@@ -91,6 +91,33 @@ describe.skipIf(process.env.TAS_LIVE !== "1" || !baseURL || !model)("invocation 
     expect(kinds.at(-1)).toBe("text");
     expect(result.steps).toBe(2);
     expect(result.text).toMatch(/27|blizzard/i);
+  });
+
+  it("sends an image attachment the model can see", async () => {
+    // A 64x64 solid red PNG, built here so the test carries no binary file.
+    const { deflateSync, crc32 } = await import("node:zlib");
+    const chunk = (type: string, data: Buffer) => {
+      const body = Buffer.concat([Buffer.from(type), data]);
+      const out = Buffer.alloc(body.length + 8);
+      out.writeUInt32BE(data.length, 0);
+      body.copy(out, 4);
+      out.writeUInt32BE(crc32(body), body.length + 4);
+      return out;
+    };
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(64, 0);
+    header.writeUInt32BE(64, 4);
+    header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+    const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(64 * 3).map((_, i) => (i % 3 === 0 ? 255 : 0))]);
+    const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(Buffer.concat(Array(64).fill(row)))), chunk("IEND", Buffer.alloc(0))]);
+
+    const vision = createClient({
+      platform: memory(),
+      prompts: [{ type: "chat", name: "colour", model: { id: "test-model", params: { temperature: 0 } }, messages: [{ role: "user", content: [{ type: "text", text: "What single colour fills this image? Answer with one word." }, { type: "image", url: "{{image}}" }] }] }],
+      gateway: { baseURL: baseURL!, ...(apiKey ? { apiKey } : {}), models: { "test-model": model! } },
+    });
+    const result = await vision.run("colour", { variables: { image: dataUrl(png, "image/png") } });
+    expect(result.text.toLowerCase()).toContain("red");
   });
 
   it("chat remembers earlier turns", async () => {

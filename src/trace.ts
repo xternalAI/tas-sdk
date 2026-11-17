@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { fetchWithRetry } from "./http.ts";
 import type { Masker } from "./masking.ts";
+import { summariseDataUrl } from "./prompt/parts.ts";
 
 /**
  * Tracing. Spans are recorded in one vendor-neutral shape, masked in-process, then sent to each
@@ -47,6 +48,11 @@ export interface CaptureOptions {
   input?: boolean;
   /** Default true. False drops outputs from this span and everything under it. */
   output?: boolean;
+  /**
+   * Default false: inline attachments (data: URIs) are recorded as a short note such as
+   * "[image/png attachment, 12 kB]" instead of their bytes. True records them in full.
+   */
+  attachments?: boolean;
 }
 
 export interface TraceOptions {
@@ -166,6 +172,21 @@ export interface TraceExportOptions {
   retryDelayMs?: number;
 }
 
+/** Replace every inline attachment in a value with a short note about it. Returns the value itself if there are none. */
+function withoutAttachmentBytes<T>(value: T, seen = new WeakSet<object>()): T {
+  if (typeof value === "string") return (value.startsWith("data:") && value.length > 256 ? summariseDataUrl(value) : value) as T;
+  if (value === null || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  let changed = false;
+  const visit = (child: unknown) => {
+    const next = withoutAttachmentBytes(child, seen);
+    changed ||= next !== child;
+    return next;
+  };
+  const copy = Array.isArray(value) ? value.map(visit) : Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v)]));
+  return (changed ? copy : value) as T;
+}
+
 export interface TracerOptions extends TraceExportOptions {
   exporters: TraceExporter[];
   mask: Masker;
@@ -204,6 +225,7 @@ export class Tracer {
     const capture = {
       input: (parent?.capture.input ?? true) && init.capture?.input !== false,
       output: (parent?.capture.output ?? true) && init.capture?.output !== false,
+      attachments: init.capture?.attachments ?? parent?.capture.attachments ?? false,
     };
     const userId = init.userId ?? parent?.record.userId;
     const sessionId = init.sessionId ?? parent?.record.sessionId;
@@ -260,9 +282,10 @@ export class Tracer {
     if (!capture.output) delete record.output;
     // Masked here, once, before any exporter can see the span.
     // ...and copied, so the span holds what the values were now, not what the application turns them into later.
-    const snapshot = <T>(value: T): T => {
+    const snapshot = <T>(original: T): T => {
+      const value = capture.attachments ? original : withoutAttachmentBytes(original);
       const masked = mask(value);
-      if (masked !== value || typeof value !== "object" || value === null) return masked; // masking already copied it
+      if (masked !== original || typeof value !== "object" || value === null) return masked; // already a copy
       try {
         return structuredClone(value);
       } catch {

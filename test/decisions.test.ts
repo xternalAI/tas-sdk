@@ -8,15 +8,20 @@
  * (adapters.test.ts, conformance.ts), invocation (run.test.ts), tracing and masking (trace.test.ts),
  * evals (eval.test.ts).
  */
-import { readFile, rm, mkdtemp } from "node:fs/promises";
+import { readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   braintrust,
   createClient,
+  dataUrl,
   ENVELOPE_KEY,
+  extractVariables,
+  fileToDataUrl,
   findNonPortable,
+  fromOpenAIContent,
+  hasAttachments,
   LANGSMITH_PROVIDERS,
   langfuse,
   langsmith,
@@ -27,9 +32,12 @@ import {
   PromptValidationError,
   renderPrompt,
   sync,
+  toOpenAIContent,
   writePrompt,
+  type PlatformAdapter,
   type PromptDefinition,
   type PromptRegistry,
+  type SpanRecord,
 } from "../src/index.ts";
 import { fixtures } from "./conformance.ts";
 import { fakeBraintrust, fakeLangfuse, fakeLangSmith } from "./fakes.ts";
@@ -266,6 +274,145 @@ describe("decisions: archiving", () => {
   });
 });
 
+describe("decisions: attachments", () => {
+  const vision = fixtures.find((f) => f.name === "vision/describe")!;
+  const png = `data:image/png;base64,${"A".repeat(4000)}`;
+
+  it("images and files are message parts whose url can be a variable; variables include them", () => {
+    expect(extractVariables(vision)).toEqual(["audience", "question", "screenshot", "report", "report_name"]);
+    const [, user] = renderPrompt(vision, { variables: { audience: "ops", question: "What changed?", screenshot: png, report: "https://example.com/q3.pdf", report_name: "q3" } });
+    expect(user!.content).toEqual([
+      { type: "text", text: "Compare the screenshot with the report. What changed?" },
+      { type: "image", url: png, detail: "high" },
+      { type: "image", url: "https://example.com/reference.png" },
+      { type: "file", url: "https://example.com/q3.pdf", name: "q3.pdf", mediaType: "application/pdf" },
+    ]);
+    expect(hasAttachments(vision)).toBe(true);
+    expect(hasAttachments(fixtures[0]!)).toBe(false);
+  });
+
+  it("only text, image and file parts exist; a part must be well-formed", () => {
+    const withPart = (part: unknown) => ({ type: "chat", name: "x", messages: [{ role: "user", content: [part] }] });
+    expect(() => parsePrompt(withPart({ type: "audio", url: "x" }))).toThrow(PromptValidationError);
+    expect(() => parsePrompt(withPart({ type: "image" }))).toThrow(PromptValidationError);
+    expect(() => parsePrompt(withPart({ type: "image", url: "x", detail: "huge" }))).toThrow(PromptValidationError);
+    expect(() => parsePrompt({ type: "chat", name: "x", messages: [{ role: "user", content: [] }] })).toThrow(PromptValidationError);
+    expect(() => parsePrompt({ type: "text", name: "x", text: [{ type: "text", text: "no parts on text prompts" }] })).toThrow(PromptValidationError);
+  });
+
+  it("goes to the model in the OpenAI format: inline files as data, anything else as a reference", () => {
+    expect(toOpenAIContent("plain")).toBe("plain");
+    const wire = toOpenAIContent([
+      { type: "text", text: "t" },
+      { type: "image", url: png, detail: "low" },
+      { type: "file", url: "data:application/pdf;base64,AAAA", name: "a.pdf" },
+      { type: "file", url: "https://example.com/b.pdf", mediaType: "application/pdf" },
+    ]);
+    expect(wire).toEqual([
+      { type: "text", text: "t" },
+      { type: "image_url", image_url: { url: png, detail: "low" } },
+      { type: "file", file: { file_data: "data:application/pdf;base64,AAAA", filename: "a.pdf" } },
+      { type: "file", file: { file_id: "https://example.com/b.pdf", format: "application/pdf" } },
+    ]);
+    expect(fromOpenAIContent(wire)).toEqual([
+      { type: "text", text: "t" },
+      { type: "image", url: png, detail: "low" },
+      { type: "file", url: "data:application/pdf;base64,AAAA", name: "a.pdf" },
+      { type: "file", url: "https://example.com/b.pdf", mediaType: "application/pdf" },
+    ]);
+    expect(() => fromOpenAIContent(42)).toThrow(/neither text nor a list of parts/);
+    expect(() => fromOpenAIContent([{ type: "file", file: {} }])).toThrow(/"file" is not supported/);
+  });
+
+  it("run sends parts on the wire, and chat turns can carry attachments too", async () => {
+    const bodies: any[] = [];
+    const gateway = { baseURL: "https://gw.test/v1", fetch: (async (_u: unknown, init?: RequestInit) => (bodies.push(JSON.parse(String(init!.body))), new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] })))) as typeof fetch };
+    const client = createClient({ platform: memory(), tracing: false, gateway, prompts: [vision, { type: "chat", name: "chatty", model: { id: "m" }, messages: [{ role: "system", content: "Hi" }] }] });
+    await client.run("vision/describe", { variables: { audience: "ops", question: "?", screenshot: png, report: "data:application/pdf;base64,AAAA", report_name: "q3" } });
+    expect(bodies[0].messages[1].content.map((p: any) => p.type)).toEqual(["text", "image_url", "image_url", "file"]);
+    expect(bodies[0].messages[1].content[3]).toEqual({ type: "file", file: { file_data: "data:application/pdf;base64,AAAA", filename: "q3.pdf", format: "application/pdf" } });
+    await client.chat("chatty").send([{ type: "text", text: "what is this?" }, { type: "image", url: png }]);
+    expect(bodies[1].messages[1]).toEqual({ role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: png } }] });
+  });
+
+  it("traces record a note instead of attachment bytes, unless asked for them", async () => {
+    const spans: SpanRecord[] = [];
+    const tracing: PlatformAdapter = { id: "t", tracing: { url: "https://t.test", headers: {}, attributes: (s) => (spans.push(s), {}), fetch: (async () => new Response("{}")) as typeof fetch } };
+    const client = createClient({ platform: memory(), tracing: [tracing] });
+    const input = { image: png, small: "data:text/plain;base64,aGk=", nested: [{ url: png }] };
+    await client.trace("default", { input }, () => undefined);
+    await client.trace("kept", { input, capture: { attachments: true } }, () => client.trace("child", { input: png }, () => undefined));
+    await client.flush();
+    const byName = (name: string) => spans.find((s) => s.name === name)!;
+    expect(byName("default").input).toEqual({ image: "[image/png attachment, 3 kB]", small: "data:text/plain;base64,aGk=", nested: [{ url: "[image/png attachment, 3 kB]" }] });
+    expect(byName("kept").input).toEqual(input);
+    expect(byName("child").input).toBe(png); // the setting is inherited
+    expect(input.image).toBe(png); // the application's own object is untouched
+  });
+
+  it("Braintrust stores attachments natively, in its own message format", async () => {
+    const fake = fakeBraintrust();
+    await bt(fake).push(vision);
+    const row = fake.versions.get("vision/describe")![0] as any;
+    expect(row.prompt_data.prompt.messages[1].content.map((p: any) => p.type)).toEqual(["text", "image_url", "image_url", "file"]);
+    expect(row.metadata.__tas.fields.messages).toBeUndefined();
+  });
+
+  it("Langfuse stores text only: attachments are marked in the text and kept in metadata", async () => {
+    const fake = fakeLangfuse();
+    const reg = lf(fake);
+    await reg.push(vision);
+    const row = fake.store.get("vision/describe")![0] as any;
+    expect(row.prompt[1].content).toBe("Compare the screenshot with the report. {{question}}\n[image: {{screenshot}}]\n[image: https://example.com/reference.png]\n[file: {{report_name}}.pdf]");
+    expect(row.config.__tas.fields.messages).toEqual(vision.type === "chat" ? vision.messages : []);
+    expect((await reg.get({ name: "vision/describe" }))!.definition).toEqual(vision);
+    // Edited in the Langfuse UI: the text there is now the truth, and the attachments it never held are gone.
+    row.prompt[1].content = "Rewritten in the UI {{question}}";
+    expect((await reg.get({ name: "vision/describe" }))!.definition).toMatchObject({ messages: [{ role: "system" }, { role: "user", content: "Rewritten in the UI {{question}}" }] });
+  });
+
+  it("LangSmith stores images natively and keeps files in metadata", async () => {
+    const fake = fakeLangSmith();
+    const reg = ls(fake);
+    await reg.push(vision);
+    const manifest = fake.repos.get("vision--describe")!.commits[0]!.manifest;
+    const user = manifest.kwargs.first.kwargs.messages[1].kwargs.prompt;
+    expect(user.map((t: any) => t.id.at(-1))).toEqual(["PromptTemplate", "ImagePromptTemplate", "ImagePromptTemplate"]); // no template exists for the file
+    expect(user[1].kwargs).toEqual({ input_variables: ["screenshot"], template: { url: "{{screenshot}}", detail: "high" }, template_format: "mustache" });
+    expect((await reg.get({ name: "vision/describe" }))!.definition).toEqual(vision);
+    // Edited in the LangSmith UI: what it shows is the truth, so the file part it never held is gone.
+    user.pop();
+    const edited = (await reg.get({ name: "vision/describe" }))!.definition as Extract<PromptDefinition, { type: "chat" }>;
+    expect(edited.messages[1]).toEqual({ role: "user", content: [{ type: "text", text: "Compare the screenshot with the report. {{question}}" }, { type: "image", url: "{{screenshot}}", detail: "high" }] });
+  });
+
+  it("an image-only prompt needs no metadata on LangSmith, and f-string image urls are converted", async () => {
+    const fake = fakeLangSmith();
+    const reg = ls(fake);
+    const images: PromptDefinition = { type: "chat", name: "p", messages: [{ role: "user", content: [{ type: "text", text: "see" }, { type: "image", url: "{{u}}" }] }] };
+    await reg.push(images);
+    const manifest = fake.repos.get("p")!.commits[0]!.manifest;
+    expect(manifest.kwargs.metadata.__tas.fields.messages).toBeUndefined();
+    manifest.kwargs.messages[0].kwargs.prompt[1].kwargs = { template: { url: "{u}" }, template_format: "f-string" };
+    manifest.kwargs.messages[0].kwargs.prompt[0].kwargs = { template: "see {x}", template_format: "f-string" };
+    expect((await reg.get({ name: "p" }))!.definition).toMatchObject({ messages: [{ content: [{ type: "text", text: "see {{x}}" }, { type: "image", url: "{{u}}" }] }] });
+  });
+
+  it("turns local files into data: URIs for use as variables", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "tas-att-"));
+    try {
+      await writeFile(join(dir, "shot.PNG"), Buffer.from([1, 2, 3]));
+      await writeFile(join(dir, "notes.weird"), "hi");
+      expect(await fileToDataUrl(join(dir, "shot.PNG"))).toBe("data:image/png;base64,AQID");
+      expect(await fileToDataUrl(join(dir, "notes.weird"), "text/plain")).toBe("data:text/plain;base64,aGk=");
+      await expect(fileToDataUrl(join(dir, "notes.weird"))).rejects.toThrow(/cannot tell the media type/);
+      expect(dataUrl(new Uint8Array([104, 105]), "text/plain")).toBe("data:text/plain;base64,aGk=");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("decisions: Braintrust", () => {
   it("keeps tools on a text prompt in the envelope only (completion prompts have no tools field)", async () => {
     const fake = fakeBraintrust();
@@ -276,12 +423,21 @@ describe("decisions: Braintrust", () => {
   });
 
   it.each([
-    ["multimodal content", { role: "user", content: [{ type: "text", text: "hi" }] }, /not plain text/],
+    ["an audio part", { role: "user", content: [{ type: "input_audio", input_audio: { data: "…", format: "wav" } }] }, /part of type "input_audio" is not supported/],
     ["a tool-role message", { role: "tool", content: "result" }, /role "tool"/],
   ])("rejects a prompt with %s as not portable", async (_what, message, error) => {
     const fake = fakeBraintrust();
     fake.versions.set("foreign", [{ id: "p1", _xact_id: "1", slug: "foreign", name: "foreign", prompt_data: { prompt: { type: "chat", messages: [message] } } }]);
     await expect(bt(fake).get({ name: "foreign" })).rejects.toThrow(error);
+  });
+
+  it("reads images and files attached in the Braintrust UI", async () => {
+    const fake = fakeBraintrust();
+    const content = [{ type: "text", text: "Look" }, { type: "image_url", image_url: { url: "{{shot}}" } }, { type: "file", file: { file_data: "data:application/pdf;base64,AAAA", filename: "a.pdf" } }];
+    fake.versions.set("foreign", [{ id: "p1", _xact_id: "1", slug: "foreign", name: "foreign", prompt_data: { prompt: { type: "chat", messages: [{ role: "user", content }] } } }]);
+    expect((await bt(fake).get({ name: "foreign" }))!.definition).toMatchObject({
+      messages: [{ role: "user", content: [{ type: "text", text: "Look" }, { type: "image", url: "{{shot}}" }, { type: "file", url: "data:application/pdf;base64,AAAA", name: "a.pdf" }] }],
+    });
   });
 });
 
@@ -369,7 +525,7 @@ describe("decisions: LangSmith", () => {
   });
 
   it.each([
-    ["a multimodal message", () => chatOf(human([fstring("hi"), { type: "image_url" }])), /non-text content/],
+    ["a message part LangChain has no template for here", () => chatOf(human([fstring("hi"), { type: "image_url" }])), /a part of type "image_url"/],
     ["an unknown message type", () => chatOf(lcNode(["langchain", "prompts", "chat", "ToolMessagePromptTemplate"], { prompt: fstring("x") })), /message type "ToolMessagePromptTemplate"/],
     ["an object that is not a prompt", () => lcNode(["langchain", "schema", "runnable", "RunnableLambda"], {}), /unsupported object "RunnableLambda"/],
   ])("rejects %s as not portable", async (_what, manifest, error) => {

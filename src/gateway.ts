@@ -1,5 +1,6 @@
 import type { GatewayConfig } from "./config.ts";
 import { fetchWithRetry } from "./http.ts";
+import type { OpenAIPart } from "./prompt/parts.ts";
 
 /**
  * The wire level of invocation: one chat-completions request to an OpenAI-compatible endpoint,
@@ -15,7 +16,8 @@ export interface ToolCall {
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  /** Text, or parts when the message carries images or files. Replies from the model are always text. */
+  content: string | OpenAIPart[] | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
 }
@@ -136,7 +138,7 @@ export async function requestCompletion(gateway: GatewayConfig, body: Record<str
   const reply = (await response.json()) as { choices?: { message?: ChatMessage; finish_reason?: string }[]; usage?: WireUsage };
   const choice = reply.choices?.[0];
   if (!choice?.message) throw new GatewayError("gateway reply has no choices[0].message");
-  if (streaming && choice.message.content) options.onText!(choice.message.content);
+  if (streaming && typeof choice.message.content === "string" && choice.message.content) options.onText!(choice.message.content);
   return {
     message: { ...choice.message, role: "assistant", content: choice.message.content ?? null },
     finishReason: choice.finish_reason,

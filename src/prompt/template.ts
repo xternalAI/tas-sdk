@@ -1,4 +1,4 @@
-import type { PromptDefinition } from "./model.ts";
+import type { ContentPart, MessageContent, PromptDefinition } from "./model.ts";
 
 /**
  * The portable template subset: a variable is `{{name}}` or `{{nested.path}}`.
@@ -17,7 +17,7 @@ const PATH = /^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$/;
 /** Constructs with no meaning in the portable subset: Nunjucks/Jinja blocks and comments, Langfuse composition. */
 const FOREIGN = /\{%[\s\S]*?%\}|\{#[\s\S]*?#\}|@@@langfusePrompt:[^@]*@@@/g;
 
-export type RenderedMessage = { role: "system" | "user" | "assistant"; content: string };
+export type RenderedMessage = { role: "system" | "user" | "assistant"; content: MessageContent };
 
 export class TemplateError extends Error {}
 
@@ -28,9 +28,12 @@ function variableOf(triple: string | undefined, double: string | undefined): str
   return PATH.test(path) ? path : undefined;
 }
 
+/** Every string of a part that may hold variables. */
+const partStrings = (part: ContentPart): string[] => (part.type === "text" ? [part.text] : part.type === "image" ? [part.url] : [part.url, part.name ?? ""]);
+
 function templateStrings(def: PromptDefinition): string[] {
   if (def.type === "text") return [def.text];
-  return def.messages.flatMap((m) => ("content" in m ? [m.content] : []));
+  return def.messages.flatMap((m) => ("content" in m ? (typeof m.content === "string" ? [m.content] : m.content.flatMap(partStrings)) : []));
 }
 
 function scan(text: string): { variables: string[]; nonPortable: string[] } {
@@ -114,6 +117,13 @@ export function renderPrompt(def: PromptDefinition, input: RenderInput = {}): Re
       }
       return filled;
     }
-    return [{ role: m.role, content: renderString(m.content, vars, def.name, strict) }];
+    const fill = (text: string) => renderString(text, vars, def.name, strict);
+    if (typeof m.content === "string") return [{ role: m.role, content: fill(m.content) }];
+    const content = m.content.map((part): ContentPart => {
+      if (part.type === "text") return { ...part, text: fill(part.text) };
+      if (part.type === "image") return { ...part, url: fill(part.url) };
+      return { ...part, url: fill(part.url), ...(part.name === undefined ? {} : { name: fill(part.name) }) };
+    });
+    return [{ role: m.role, content }];
   });
 }

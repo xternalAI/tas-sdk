@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ARCHIVED_TAG, hashPrompt, type PromptDefinition, type PromptRef } from "./prompt/model.ts";
 import type { DatasetStore } from "./dataset.ts";
 import type { ExperimentReporter } from "./eval.ts";
@@ -81,6 +82,15 @@ export function tagsWithoutArchiveMarker(tags: string[] | null | undefined, arch
   return (tags ?? []).filter((t) => !(archived && t === ARCHIVED_TAG));
 }
 
+/**
+ * A short hash of what an adapter wrote natively. Stored in the envelope next to anything emulated,
+ * so that on read the adapter can tell whether the native side was edited in the vendor's UI since:
+ * if it was, the emulated copy is stale and the vendor's edit wins.
+ */
+export function fingerprint(native: unknown): string {
+  return createHash("sha256").update(JSON.stringify(native ?? null)).digest("hex").slice(0, 16);
+}
+
 /** Reserved metadata key holding whatever a platform cannot represent natively. */
 export const ENVELOPE_KEY = "__tas";
 
@@ -88,6 +98,8 @@ export interface Envelope {
   v: 1;
   hash: string;
   fields: Partial<PromptDefinition>;
+  /** `fingerprint` of the native representation written alongside, when some of `fields` shadow it. */
+  native?: string;
 }
 
 /** Build the envelope for the fields this platform has to emulate. */

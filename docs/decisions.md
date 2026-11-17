@@ -49,6 +49,21 @@ platform detail lives in [platform-mapping.md](platform-mapping.md).
 - **There is no way to write a literal `{{`** in a prompt. Single braces (JSON examples) are safe.
 - **LangSmith f-string prompts are converted to `{{var}}` on read.** *Caveat:* format specifiers such as `{price:.2f}` become non-portable and are flagged.
 
+## Attachments
+
+Pinned by the "decisions: attachments" tests. Verified live on 2026-11-17: a prompt with text, two images and a file round-tripped on all three platforms, and a local model correctly described an image sent through `run`.
+
+- **A message's content is text, or a list of parts: `text`, `image`, `file`.** An attachment is identified by a `url`, which is an https URL, a `data:` URI, or a `{{variable}}` filled with either at call time. Text prompts (the single-string kind) cannot have parts.
+- **Attachments are usually variables.** The prompt declares where the image or file goes; the call supplies it. `fileToDataUrl(path)` and `dataUrl(bytes, type)` turn local content into a value to pass.
+- **On the wire, parts use the OpenAI chat format.** Images become `image_url`. Inline files become `file.file_data`; a file given by URL becomes `file.file_id` with `format`, which is the convention LiteLLM accepts. *Caveat:* whether a file is accepted, and by URL or only inline, depends on the gateway and model. Images are widely supported; files are not.
+- **Audio and video parts are not supported.**
+- **Traces record a note instead of attachment bytes**, such as `[image/png attachment, 12 kB]`, for any inline attachment over 256 characters. `capture: { attachments: true }` records them in full; the setting is inherited down the trace.
+- **How each platform stores a prompt with attachments:**
+  - *Braintrust:* natively, in its own message format. Images and files attached in the Braintrust UI are read back.
+  - *LangSmith:* images natively, as image templates, so they work in its playground. It has no template for files, so a prompt with a file part keeps its real messages in the envelope and shows everything but the files natively.
+  - *Langfuse:* messages can only be text (its API rejects anything else). The text is stored with a marker where each attachment goes, such as `[image: {{screenshot}}]`, and the real messages are kept in the envelope. *Caveat:* in the Langfuse playground such a prompt runs as text only.
+- **An edit in the vendor UI still wins.** Where real messages are kept in the envelope, a fingerprint of what was written natively is kept with them. If the native side has changed since, the envelope's copy is ignored, which means attachments the platform never held are dropped from that version.
+
 ## Canonical side and sync
 
 - **The user picks which side is the truth, per config:** `canonical: "repo"` (default) or `"platform"`.
@@ -169,7 +184,7 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
 - **Braintrust drops parameters the model does not support** (verified live: `temperature` on `gpt-5`). The intended set is kept in the envelope and restored on read.
 - **Labels are Braintrust environments**, which are org-wide and must already exist. Pushing to an unknown label fails.
 - **A prompt in template format `none` containing `{{` is rejected** as not portable.
-- **Multimodal message content and roles other than system/user/assistant are rejected** as not portable. The same holds on Langfuse and LangSmith.
+- **Roles other than system/user/assistant, and message parts other than text, image and file (audio, for example), are rejected** as not portable. The same holds on Langfuse and LangSmith.
 - **Environment assignment uses endpoints outside Braintrust's published API spec** (verified live, but more likely to change).
 
 ## Langfuse

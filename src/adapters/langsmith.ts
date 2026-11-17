@@ -4,6 +4,7 @@ import type { Dataset, DatasetItem, DatasetStore } from "../dataset.ts";
 import type { ExperimentReporter } from "../eval.ts";
 import {
   ENVELOPE_KEY,
+  fingerprint,
   packEnvelope,
   tagsWithArchiveMarker,
   unpackEnvelope,
@@ -11,7 +12,7 @@ import {
   type PromptRegistry,
   type RemotePrompt,
 } from "../adapter.ts";
-import { hashPrompt, parsePrompt, type PromptDefinition, type PromptMessage, type PromptModel, type PromptTool } from "../prompt/model.ts";
+import { hashPrompt, parsePrompt, type ContentPart, type MessageContent, type PromptDefinition, type PromptMessage, type PromptModel, type PromptTool } from "../prompt/model.ts";
 import { extractVariables } from "../prompt/template.ts";
 import { asText, commonAttributes, type TraceExporter } from "../trace.ts";
 
@@ -144,6 +145,17 @@ function template(text: string): Lc {
   return lc(["langchain", "prompts", "prompt", "PromptTemplate"], { input_variables: vars, template: text, template_format: "mustache" });
 }
 
+/** One template for plain text; a list of text and image templates for a message with parts. Files are left out. */
+function contentTemplate(content: MessageContent): Lc | Lc[] {
+  if (typeof content === "string") return template(content);
+  return content.flatMap((part): Lc[] => {
+    if (part.type === "text") return [template(part.text)];
+    if (part.type === "file") return [];
+    const variables = topLevel(extractVariables({ type: "text", name: "x", text: part.url }));
+    return [lc(["langchain_core", "prompts", "image", "ImagePromptTemplate"], { input_variables: variables, template: { url: part.url, ...(part.detail ? { detail: part.detail } : {}) }, template_format: "mustache" })];
+  });
+}
+
 /** LangSmith's default format is f-string: `{var}` is a variable and `{{` / `}}` are literal braces. */
 function fromFString(text: string): string {
   return text.replace(/\{\{|\}\}|\{([^{}]+)\}/g, (match, variable?: string) => (variable ? `{{${variable.trim()}}}` : match[0]!));
@@ -172,7 +184,21 @@ function encode(def: PromptDefinition, custom?: Resolver): Lc {
   // The envelope keeps the exact canonical values. Model, tools and output are also written natively
   // below wherever LangSmith has a place for them; `decode` reconciles the two. Description and tags
   // are repo-wide in LangSmith, so the per-version copy lives here as well.
-  const envelope = packEnvelope(def, ["description", "tags", "metadata", "model", "tools", "output", "archived"]);
+  // LangChain has a template for text and for images, but none for files. A prompt with a file part
+  // keeps its real messages in the envelope; natively it shows everything except the files.
+  const hasFiles = def.type === "chat" && def.messages.some((m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type === "file"));
+  const nativeMessages =
+    def.type === "chat"
+      ? def.messages.map((m) =>
+          "placeholder" in m
+            ? lc(["langchain_core", "prompts", "chat", "MessagesPlaceholder"], { variable_name: m.placeholder })
+            : lc(["langchain", "prompts", "chat", MESSAGE_CLASS[m.role]], { prompt: contentTemplate(m.content) }),
+        )
+      : [];
+  const envelope = {
+    ...packEnvelope(def, ["description", "tags", "metadata", "model", "tools", "output", "archived", ...(hasFiles ? ["messages" as keyof PromptDefinition] : [])]),
+    ...(hasFiles ? { native: fingerprint(nativeMessages) } : {}),
+  };
   const metadata = { [ENVELOPE_KEY]: envelope };
 
   let prompt: Lc;
@@ -181,11 +207,7 @@ function encode(def: PromptDefinition, custom?: Resolver): Lc {
   } else {
     const kwargs = {
       input_variables: topLevel(extractVariables(def)),
-      messages: def.messages.map((m) =>
-        "placeholder" in m
-          ? lc(["langchain_core", "prompts", "chat", "MessagesPlaceholder"], { variable_name: m.placeholder })
-          : lc(["langchain", "prompts", "chat", MESSAGE_CLASS[m.role]], { prompt: template(m.content) }),
-      ),
+      messages: nativeMessages,
       template_format: "mustache",
       metadata,
     };
@@ -267,14 +289,24 @@ function decode(handle: string, manifest: Lc, repo?: Repo, custom?: Resolver): P
 
   if (cls(prompt) === "PromptTemplate") return parsePrompt({ type: "text", text: text(prompt), ...common });
   if (cls(prompt) !== "ChatPromptTemplate" && cls(prompt) !== "StructuredPrompt") throw fail(`unsupported object "${cls(prompt)}"`);
-  const messages = (prompt.kwargs.messages as Lc[]).map((m): PromptMessage => {
+  const formatted = (value: string, node: Lc) => ((node.kwargs.template_format ?? prompt.kwargs.template_format) === "mustache" ? value : fromFString(value));
+  const part = (node: Lc): ContentPart => {
+    if (cls(node) === "PromptTemplate") return { type: "text", text: text(node) };
+    const image = node?.kwargs?.template as { url?: string; detail?: "low" | "high" | "auto" } | undefined;
+    if (cls(node) !== "ImagePromptTemplate" || typeof image?.url !== "string") throw fail(`a message has a part of type "${cls(node) ?? (node as { type?: string })?.type}"`);
+    return { type: "image", url: formatted(image.url, node), ...(image.detail ? { detail: image.detail } : {}) };
+  };
+  const native = (prompt.kwargs.messages as Lc[]).map((m): PromptMessage => {
     if (cls(m) === "MessagesPlaceholder") return { placeholder: m.kwargs.variable_name };
     const role = ROLE_OF[cls(m) ?? ""];
     if (!role) throw fail(`message type "${cls(m)}"`);
     if (typeof m.kwargs.content === "string") return { role, content: m.kwargs.content }; // a fixed message, no template
-    if (!m.kwargs.prompt || Array.isArray(m.kwargs.prompt)) throw fail("a message has non-text content");
-    return { role, content: text(m.kwargs.prompt) };
+    if (!m.kwargs.prompt) throw fail("a message has no content");
+    return { role, content: Array.isArray(m.kwargs.prompt) ? m.kwargs.prompt.map(part) : text(m.kwargs.prompt) };
   });
+  // Messages with file parts come from the envelope, unless the native side was edited in LangSmith since.
+  const kept = (fields as { messages?: PromptMessage[] }).messages;
+  const messages = kept && envelope?.native === fingerprint(prompt.kwargs.messages) ? kept : native;
   return parsePrompt({ type: "chat", messages, ...common });
 }
 
