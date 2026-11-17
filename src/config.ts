@@ -1,6 +1,7 @@
 import type { PlatformAdapter } from "./adapter.ts";
 import type { MaskingConfig } from "./masking.ts";
 import type { PromptDefinition } from "./prompt/model.ts";
+import type { TraceExportOptions } from "./trace.ts";
 
 export interface GatewayConfig {
   /** Any OpenAI-compatible endpoint: LiteLLM, Braintrust Gateway, Langfuse AI Gateway, a provider directly. */
@@ -38,6 +39,11 @@ export interface TasConfig {
    * (for example while trialling a new vendor), or pass false to turn tracing off.
    */
   tracing?: PlatformAdapter[] | false;
+  /**
+   * When spans are sent. Default `{ mode: "buffered" }`: in the background, so tracing never adds to
+   * your response time. See `ExportMode` for "immediate" and "blocking".
+   */
+  traceExport?: TraceExportOptions;
   /** Called when a platform cannot be reached or rejects spans. Default: a console warning. */
   onTraceError?: (error: Error) => void;
   /** How long a prompt fetched from the platform is reused. Default 60s. Stale copies serve on fetch failure. */

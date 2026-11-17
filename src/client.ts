@@ -73,7 +73,7 @@ export function createClient(config: TasConfig): TasClient {
     .map((adapter) => adapter.tracing)
     .filter((exporter): exporter is TraceExporter => exporter !== undefined);
   const mask = createMasker(config.masking);
-  const tracer = new Tracer({ exporters, mask, ...(config.onTraceError ? { onError: config.onTraceError } : {}) });
+  const tracer = new Tracer({ exporters, mask, ...config.traceExport, ...(config.onTraceError ? { onError: config.onTraceError } : {}) });
 
   const fromLocal = (name: string): ResolvedPrompt | undefined => {
     const definition = local.get(name);

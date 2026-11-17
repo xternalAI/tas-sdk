@@ -243,7 +243,7 @@ describe("decisions: export", () => {
 
   it("holds spans until flush or until a batch fills, and sends nothing when there is nothing", async () => {
     const c = collector();
-    const tracer = new Tracer({ exporters: [c.adapter.tracing!], mask: (v) => v, maxBatch: 3, flushIntervalMs: 60_000 });
+    const tracer = new Tracer({ exporters: [c.adapter.tracing!], mask: (v) => v, batchSize: 3, intervalMs: 60_000 });
     await tracer.flush();
     expect(c.requests).toHaveLength(0);
     await tracer.span("1", {}, () => undefined);
@@ -276,6 +276,117 @@ describe("decisions: export", () => {
       ],
       status: { code: 2, message: "bad" },
     });
+  });
+});
+
+describe("decisions: export never slows the application unless asked to", () => {
+  /** A platform whose answers the test releases by hand, so "who waited for whom" can be observed. */
+  function slowPlatform() {
+    const calls: { spans: number; release: (status?: number) => void }[] = [];
+    const adapter: PlatformAdapter = {
+      id: "slow",
+      tracing: {
+        url: "https://slow.test/v1/traces",
+        headers: {},
+        attributes: () => ({}),
+        fetch: ((_url: unknown, init?: RequestInit) =>
+          new Promise<Response>((resolve, reject) => {
+            const spans = JSON.parse(String(init!.body)).resourceSpans[0].scopeSpans[0].spans.length;
+            calls.push({ spans, release: (status = 200) => resolve(new Response("{}", { status })) });
+            init!.signal?.addEventListener("abort", () => reject(init!.signal!.reason));
+          })) as typeof fetch,
+      },
+    };
+    return { adapter, calls };
+  }
+  const settled = async (p: Promise<unknown>) => Promise.race([p.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 30))]);
+  const nested = (client: ReturnType<typeof createClient>) => client.trace("outer", () => client.trace("inner", () => "value"));
+
+  it("buffered (default): work returns at once and nothing is sent until the batch or timer", async () => {
+    const slow = slowPlatform();
+    const client = createClient({ platform: slow.adapter });
+    expect(await nested(client)).toBe("value");
+    expect(slow.calls).toHaveLength(0);
+    const flushing = client.flush();
+    expect(await settled(flushing)).toBe(false); // an explicit flush is the one thing that waits
+    slow.calls[0]!.release();
+    await flushing;
+    expect(slow.calls[0]!.spans).toBe(2);
+  });
+
+  it("immediate: the whole trace is sent when its outermost span ends, without the caller waiting", async () => {
+    const slow = slowPlatform();
+    const client = createClient({ platform: slow.adapter, traceExport: { mode: "immediate" } });
+    expect(await nested(client)).toBe("value"); // returned although the platform has not answered
+    expect(slow.calls.map((c) => c.spans)).toEqual([2]); // one request for the trace, not one per span
+    slow.calls[0]!.release();
+    await client.flush();
+  });
+
+  it("blocking: the outermost call returns only after the platform answers; inner spans never wait", async () => {
+    const slow = slowPlatform();
+    const client = createClient({ platform: slow.adapter, traceExport: { mode: "blocking" } });
+    let innerDone = false;
+    const outer = client.trace("outer", async () => {
+      await client.trace("inner", () => "value");
+      innerDone = true; // reached with no request made yet: only the end of the trace waits
+      expect(slow.calls).toHaveLength(0);
+    });
+    expect(await settled(outer)).toBe(false);
+    expect(innerDone).toBe(true);
+    slow.calls[0]!.release();
+    await outer;
+    expect(slow.calls.map((c) => c.spans)).toEqual([2]);
+  });
+
+  it("blocking still never throws export errors into the application, and still returns the result", async () => {
+    const slow = slowPlatform();
+    const errors: string[] = [];
+    const client = createClient({ platform: slow.adapter, traceExport: { mode: "blocking" }, onTraceError: (e) => errors.push(e.message) });
+    const work = client.trace("outer", () => "value");
+    await new Promise((r) => setTimeout(r, 5));
+    slow.calls[0]!.release(503);
+    expect(await work).toBe("value");
+    expect(errors).toHaveLength(1);
+    const failing = client.trace("failing", () => Promise.reject(new Error("app error")));
+    failing.catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 5));
+    slow.calls[1]!.release();
+    await expect(failing).rejects.toThrow("app error"); // the application's own error still surfaces, after the trace is delivered
+  });
+
+  it("gives up on a platform that never answers, so blocking calls and shutdown cannot hang", async () => {
+    const slow = slowPlatform();
+    const errors: string[] = [];
+    const client = createClient({ platform: slow.adapter, traceExport: { mode: "blocking", timeoutMs: 40 }, onTraceError: (e) => errors.push(e.message) });
+    const started = Date.now();
+    expect(await client.trace("outer", () => "value")).toBe("value");
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/timeout|aborted/i);
+  });
+
+  it("records values as they were when the span ended, with or without masking rules", async () => {
+    for (const masking of [undefined, { keys: ["secret"] }]) {
+      const c = collector();
+      const client = createClient({ platform: c.adapter, ...(masking ? { masking } : {}) });
+      const input = { items: [1], nested: { note: "before" } };
+      const output = { status: "open", handler: () => 1 };
+      await client.trace("work", { input }, () => output);
+      input.items.push(2);
+      input.nested.note = "after";
+      output.status = "closed";
+      await client.flush();
+      expect(c.spans[0]).toMatchObject({ input: { items: [1], nested: { note: "before" } }, output: { status: "open" } });
+    }
+  });
+
+  it("with tracing off, or no platform that takes traces, nothing is recorded or waited for in any mode", async () => {
+    for (const mode of ["buffered", "immediate", "blocking"] as const) {
+      const client = createClient({ platform: memory(), traceExport: { mode } });
+      expect(await nested(client)).toBe("value");
+      await client.flush();
+    }
   });
 });
 

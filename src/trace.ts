@@ -135,14 +135,34 @@ export function toOtlp(spans: SpanRecord[], attributes: (span: SpanRecord) => Re
   };
 }
 
-export interface TracerOptions {
+/**
+ * When spans leave the process.
+ * - "buffered" (default): in the background, in batches. Your code never waits for a platform.
+ *   Right for long-running servers. Call `flush()` on shutdown.
+ * - "immediate": each trace is sent as soon as its outermost span ends, still in the background.
+ *   Traces show up sooner and less is lost if the process dies; your code still never waits.
+ * - "blocking": each trace is sent when its outermost span ends, and that `trace()` or `run()` call
+ *   does not return until the platforms have answered (or the timeout passes). This adds the
+ *   platforms' response time to your own, and is meant for runtimes that freeze the process as
+ *   soon as a handler returns.
+ */
+export type ExportMode = "buffered" | "immediate" | "blocking";
+
+export interface TraceExportOptions {
+  mode?: ExportMode;
+  /** Buffered mode: send when this many spans are waiting. Default 50. */
+  batchSize?: number;
+  /** Buffered mode: send at least this often. Default 2000. */
+  intervalMs?: number;
+  /** Give up on a platform that has not answered after this long. Default 10000. */
+  timeoutMs?: number;
+}
+
+export interface TracerOptions extends TraceExportOptions {
   exporters: TraceExporter[];
   mask: Masker;
   /** Called when a platform cannot be reached or rejects spans. Export problems never reach application code. */
   onError?: (error: Error) => void;
-  /** Spans are sent when this many are waiting, or after `flushIntervalMs`. Defaults: 50 and 2000. */
-  maxBatch?: number;
-  flushIntervalMs?: number;
 }
 
 interface Active {
@@ -217,26 +237,48 @@ export class Tracer {
       throw error;
     } finally {
       record.endTime = Date.now();
-      this.finish(record, capture);
+      const sent = this.finish(record, capture);
+      // Only "blocking" mode ever makes application code wait on a platform, and only at the end of a trace.
+      if (sent) await sent;
     }
   }
 
-  private finish(record: SpanRecord, capture: Required<CaptureOptions>): void {
-    if (!this.enabled) return;
+  /** Queue a finished span. Returns a promise only when the caller is meant to wait for delivery. */
+  private finish(record: SpanRecord, capture: Required<CaptureOptions>): Promise<void> | undefined {
+    if (!this.enabled) return undefined;
+    const mode = this.options.mode ?? "buffered";
     const mask = this.options.mask;
     if (!capture.input) delete record.input;
     if (!capture.output) delete record.output;
     // Masked here, once, before any exporter can see the span.
-    if (record.input !== undefined) record.input = mask(record.input);
-    if (record.output !== undefined) record.output = mask(record.output);
-    if (record.metadata) record.metadata = mask(record.metadata);
+    // ...and copied, so the span holds what the values were now, not what the application turns them into later.
+    const snapshot = <T>(value: T): T => {
+      const masked = mask(value);
+      if (masked !== value || typeof value !== "object" || value === null) return masked; // masking already copied it
+      try {
+        return structuredClone(value);
+      } catch {
+        return JSON.parse(JSON.stringify(value)) as T; // holds functions or similar; keep what JSON can express
+      }
+    };
+    if (record.input !== undefined) record.input = snapshot(record.input);
+    if (record.output !== undefined) record.output = snapshot(record.output);
+    if (record.metadata) record.metadata = snapshot(record.metadata);
     if (record.error) record.error = mask(record.error);
     this.buffer.push(record);
-    if (this.buffer.length >= (this.options.maxBatch ?? 50)) void this.flush();
+    if (mode !== "buffered" && !record.parentSpanId) {
+      // The outermost span just ended: the trace is complete, send it whole.
+      const sending = this.flush();
+      if (mode === "blocking") return sending;
+      void sending;
+      return undefined;
+    }
+    if (this.buffer.length >= (this.options.batchSize ?? 50)) void this.flush();
     else if (!this.timer) {
-      this.timer = setTimeout(() => void this.flush(), this.options.flushIntervalMs ?? 2000);
+      this.timer = setTimeout(() => void this.flush(), this.options.intervalMs ?? 2000);
       this.timer.unref?.(); // never keep a process alive just to send spans
     }
+    return undefined;
   }
 
   /** Send everything recorded so far and wait for it. Call before a short-lived process exits. */
@@ -260,6 +302,8 @@ export class Tracer {
         method: "POST",
         headers: { "content-type": "application/json", ...exporter.headers },
         body: JSON.stringify(toOtlp(spans, exporter.attributes)),
+        // A platform that hangs must not hold a blocking caller, or a shutdown flush, forever.
+        signal: AbortSignal.timeout(this.options.timeoutMs ?? 10_000),
       });
       if (!response.ok) throw new Error(`${new URL(exporter.url).host} rejected ${spans.length} span(s): ${response.status} ${(await response.text().catch(() => "")).slice(0, 200)}`);
     } catch (error) {
