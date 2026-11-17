@@ -20,11 +20,39 @@ const JsonObject = Type.Record(Type.String(), Type.Unknown());
 
 // The `description` on each field is what editors show on hover and in autocomplete for prompt
 // files, so these double as the user-facing reference for the format.
+const url = (what: string) =>
+  Type.String({ minLength: 1, description: `Where the ${what} is: an https URL, a data: URI, or a {{variable}} filled with either at call time.` });
+const Part = Type.Union(
+  [
+    Type.Object({ type: Type.Literal("text"), text: Type.String({ description: "Text. Use {{name}} for variables." }) }, { ...strict, title: "Text" }),
+    Type.Object(
+      {
+        type: Type.Literal("image"),
+        url: url("image"),
+        detail: Type.Optional(Type.Enum(["low", "high", "auto"], { description: "How closely the model should look, where the provider supports it." })),
+      },
+      { ...strict, title: "Image" },
+    ),
+    Type.Object(
+      {
+        type: Type.Literal("file"),
+        url: url("file"),
+        name: Type.Optional(Type.String({ description: "File name shown to the model, e.g. report.pdf. May contain {{variables}}." })),
+        mediaType: Type.Optional(Type.String({ description: 'MIME type, e.g. "application/pdf". Needed by some gateways for files given by URL.' })),
+      },
+      { ...strict, title: "File" },
+    ),
+  ],
+  { description: "One piece of a message: text, an image or a file." },
+);
+
 const Message = Type.Union([
   Type.Object(
     {
       role: Type.Enum(["system", "user", "assistant"], { description: "Who the message is from." }),
-      content: Type.String({ description: "Message text. Use {{name}} or {{nested.path}} for variables." }),
+      content: Type.Union([Type.String(), Type.Array(Part, { minItems: 1 })], {
+        description: "Message text with {{name}} or {{nested.path}} variables, or a list of parts to attach images and files.",
+      }),
     },
     { ...strict, title: "Message" },
   ),
@@ -99,6 +127,15 @@ export const promptFileSchema = {
 };
 
 export type PromptMessage = Type.Static<typeof Message>;
+/** One piece of a message: text, an image or a file. */
+export type ContentPart = Type.Static<typeof Part>;
+/** What a message holds: plain text, or parts when it carries attachments. */
+export type MessageContent = string | ContentPart[];
+
+/** True when any message of the prompt carries an image or a file. */
+export function hasAttachments(definition: PromptDefinition): boolean {
+  return definition.type === "chat" && definition.messages.some((m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type !== "text"));
+}
 export type PromptTool = Type.Static<typeof Tool>;
 export type PromptModel = Type.Static<typeof Model>;
 export type PromptDefinition = Type.Static<typeof promptSchema>;

@@ -23,6 +23,23 @@ export const fixtures: PromptDefinition[] = [
   { type: "chat", name: "plain", messages: [{ role: "user", content: "Hi {{name}}" }] },
   { type: "text", name: "legacy/completion_v1", text: "Summarise: {{text}}", model: { id: "gpt-5-mini" } },
   { type: "text", name: "text-with-tools", text: "Go", tools: [{ name: "noop", parameters: {} }] },
+  {
+    type: "chat",
+    name: "vision/describe",
+    model: { id: "gpt-5" },
+    messages: [
+      { role: "system", content: "You describe attachments for {{audience}}." },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Compare the screenshot with the report. {{question}}" },
+          { type: "image", url: "{{screenshot}}", detail: "high" },
+          { type: "image", url: "https://example.com/reference.png" },
+          { type: "file", url: "{{report}}", name: "{{report_name}}.pdf", mediaType: "application/pdf" },
+        ],
+      },
+    ],
+  },
 ];
 
 export interface ConformanceOptions {

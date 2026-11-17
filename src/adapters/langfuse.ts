@@ -1,5 +1,6 @@
 import {
   ENVELOPE_KEY,
+  fingerprint,
   packEnvelope,
   tagsWithArchiveMarker,
   tagsWithoutArchiveMarker,
@@ -12,7 +13,8 @@ import { randomBytes } from "node:crypto";
 import type { Dataset, DatasetItem, DatasetStore } from "../dataset.ts";
 import type { ExperimentReporter } from "../eval.ts";
 import { asText, commonAttributes, toOtlp, type SpanRecord, type TraceExporter } from "../trace.ts";
-import { hashPrompt, parsePrompt, PROMPT_NAME, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
+import { textOnly } from "../prompt/parts.ts";
+import { hasAttachments, hashPrompt, parsePrompt, PROMPT_NAME, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
 
 export interface LangfuseOptions {
   /** Passed explicitly, never read from the environment: one process may hold many tenants' keys. */
@@ -59,6 +61,13 @@ const ORPHAN_CONFIG = "langfuse.config";
 function encode(def: PromptDefinition): Body {
   const { [ORPHAN_CONFIG]: orphan, ...metadata } = def.metadata ?? {};
   const envelopeSource = { ...def, ...(Object.keys(metadata).length ? { metadata } : { metadata: undefined }) };
+  // Langfuse messages hold text only. A prompt with attachments is stored as its text, with a marker
+  // where each attachment goes, and the real messages travel in the envelope.
+  const prompt =
+    def.type === "text"
+      ? def.text
+      : def.messages.map((m) => ("placeholder" in m ? { type: "placeholder" as const, name: m.placeholder } : { role: m.role, content: textOnly(m.content) }));
+  const emulated: (keyof PromptDefinition)[] = ["description", "metadata", "archived", "tags", ...(hasAttachments(def) ? ["messages" as keyof PromptDefinition] : [])];
   const config: Record<string, unknown> = {
     ...(orphan as Record<string, unknown> | undefined),
     ...def.model?.params,
@@ -84,15 +93,12 @@ function encode(def: PromptDefinition): Body {
         }
       : {}),
     // Description and metadata have no native field on a Langfuse prompt.
-    [ENVELOPE_KEY]: packEnvelope(envelopeSource as PromptDefinition, ["description", "metadata", "archived", "tags"]),
+    [ENVELOPE_KEY]: { ...packEnvelope(envelopeSource as PromptDefinition, emulated), native: fingerprint(prompt) },
   };
   return {
     name: def.name,
     type: def.type,
-    prompt:
-      def.type === "text"
-        ? def.text
-        : def.messages.map((m) => ("placeholder" in m ? { type: "placeholder" as const, name: m.placeholder } : m)),
+    prompt,
     config,
     tags: tagsWithArchiveMarker(def),
   };
@@ -145,13 +151,18 @@ function decode(row: Pick<Row, "name" | "type" | "prompt" | "config" | "tags" | 
     return parsePrompt({ type: "text", text: row.prompt, ...common });
   }
   if (!Array.isArray(row.prompt)) throw fail("chat prompt body is not a message list");
-  const messages = row.prompt.map((m): PromptMessage => {
+  const native = row.prompt.map((m): PromptMessage => {
     if (m.type === "placeholder") return { placeholder: (m as { name: string }).name };
     const { role, content } = m as { role: string; content: unknown };
     if (typeof content !== "string") throw fail("message content is not plain text");
     if (role !== "system" && role !== "user" && role !== "assistant") throw fail(`role "${role}"`);
     return { role, content };
   });
+  // Messages with attachments come from the envelope, unless the text was edited in Langfuse since.
+  // Langfuse adds a `type` to each stored message, so compare what we wrote, not what it returns.
+  const written = native.map((m) => ("placeholder" in m ? { type: "placeholder", name: m.placeholder } : m));
+  const kept = (envelope?.fields as { messages?: PromptMessage[] } | undefined)?.messages;
+  const messages = kept && envelope?.native === fingerprint(written) ? kept : native;
   return parsePrompt({ type: "chat", messages, ...common });
 }
 

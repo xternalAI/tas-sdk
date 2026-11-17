@@ -1,7 +1,9 @@
 import type { GatewayConfig } from "./config.ts";
 import { GatewayError, requestCompletion, type ChatMessage, type ToolCall } from "./gateway.ts";
 import type { PromptDefinition, ResolvedPrompt } from "./prompt/model.ts";
-import { renderPrompt, type RenderInput } from "./prompt/template.ts";
+import type { ContentPart } from "./prompt/model.ts";
+import { toOpenAIContent } from "./prompt/parts.ts";
+import { renderPrompt, type RenderInput, type RenderedMessage } from "./prompt/template.ts";
 import { toJsonSchema, validateSchema, type InferSchema, type SchemaInput } from "./schema.ts";
 import type { SpanHandle, SpanInit, TokenUsage, TraceOptions, Tracer } from "./trace.ts";
 
@@ -124,6 +126,8 @@ const promptRef = (prompt: ResolvedPrompt) => ({
   ...(prompt.remote ? { platform: prompt.remote.platform, version: prompt.remote.version } : {}),
 });
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value ?? null));
+/** Rendered prompt messages use our parts; the wire wants the OpenAI ones. */
+const toWire = (messages: RenderedMessage[]): ChatMessage[] => messages.map((m) => ({ role: m.role, content: toOpenAIContent(m.content) }));
 
 interface ResolvedTools {
   /** Tool definitions in the wire format, or undefined when there are none. */
@@ -255,7 +259,7 @@ async function execute<S extends SchemaInput | undefined>(ctx: Context, prompt: 
     usage.outputTokens += reply.usage.outputTokens;
     usage.totalTokens += reply.usage.totalTokens;
 
-    const text = reply.message.content ?? "";
+    const text = typeof reply.message.content === "string" ? reply.message.content : "";
     const finish = (value: unknown, toolCalls: ToolCall[]): RunResult<OutputOf<S>> => ({
       text,
       output: value as OutputOf<S>,
@@ -286,7 +290,7 @@ async function execute<S extends SchemaInput | undefined>(ctx: Context, prompt: 
 /** Render a prompt and run it inside a span named after it; model calls and tool executions nest under that. */
 function runPrompt<S extends SchemaInput | undefined>(ctx: Context, prompt: ResolvedPrompt, options: RunOptions<S>): Promise<RunResult<OutputOf<S>>> {
   return ctx.span(prompt.definition.name, { ...options.trace, input: options.variables ?? {}, prompt: promptRef(prompt) }, async (root) => {
-    const messages: ChatMessage[] = [...renderPrompt(prompt.definition, options), ...(options.messages ?? [])];
+    const messages: ChatMessage[] = [...toWire(renderPrompt(prompt.definition, options)), ...(options.messages ?? [])];
     const result = await execute(ctx, prompt, messages, options);
     root.update({ output: result.output ?? result.text });
     return result;
@@ -358,10 +362,10 @@ export function complete<S extends SchemaInput | undefined>(gateway: GatewayConf
 export interface ChatSession {
   /** The conversation so far, including the rendered prompt once the first message has been sent. */
   readonly messages: readonly ChatMessage[];
-  /** Add a user message and get the reply. Per-call options override the session's. */
-  send<S extends SchemaInput | undefined = undefined>(content: string, options?: CallOptions<S>): Promise<RunResult<OutputOf<S>>>;
+  /** Add a user message (text, or parts to attach images and files) and get the reply. Per-call options override the session's. */
+  send<S extends SchemaInput | undefined = undefined>(content: string | ContentPart[], options?: CallOptions<S>): Promise<RunResult<OutputOf<S>>>;
   /** As `send`, but streamed. */
-  stream<S extends SchemaInput | undefined = undefined>(content: string, options?: CallOptions<S>): RunStream<OutputOf<S>>;
+  stream<S extends SchemaInput | undefined = undefined>(content: string | ContentPart[], options?: CallOptions<S>): RunStream<OutputOf<S>>;
 }
 
 /** A multi-turn conversation: the prompt is rendered once, then each turn continues from the last reply. */
@@ -370,12 +374,12 @@ export function chat(gateway: GatewayConfig | undefined, load: () => Promise<Res
   let history: ChatMessage[] | undefined;
   let prompt: ResolvedPrompt | undefined;
 
-  async function turn<S extends SchemaInput | undefined>(content: string, perCall: CallOptions<S> | undefined, emit?: Emit): Promise<RunResult<OutputOf<S>>> {
+  async function turn<S extends SchemaInput | undefined>(content: string | ContentPart[], perCall: CallOptions<S> | undefined, emit?: Emit): Promise<RunResult<OutputOf<S>>> {
     const loaded = (prompt ??= await load());
     // Each turn is its own trace; give the session a `trace.sessionId` to group them on the platform.
     return span(loaded.definition.name, { ...options.trace, ...perCall?.trace, input: content, prompt: promptRef(loaded) }, async (root) => {
-      const base = history ?? [...renderPrompt(loaded.definition, options), ...(options.messages ?? [])];
-      const result = await execute({ gateway, span, emit }, loaded, [...base, { role: "user", content }], { ...options, ...perCall } as CallOptions<S>);
+      const base = history ?? [...toWire(renderPrompt(loaded.definition, options)), ...(options.messages ?? [])];
+      const result = await execute({ gateway, span, emit }, loaded, [...base, { role: "user", content: toOpenAIContent(content) }], { ...options, ...perCall } as CallOptions<S>);
       history = result.messages; // only a successful turn becomes part of the conversation
       root.update({ output: result.output ?? result.text });
       return result;

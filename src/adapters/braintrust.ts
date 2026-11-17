@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   ENVELOPE_KEY,
+  fingerprint,
   packEnvelope,
   tagsWithArchiveMarker,
   tagsWithoutArchiveMarker,
@@ -13,6 +13,7 @@ import {
 import type { Dataset, DatasetItem, DatasetStore } from "../dataset.ts";
 import type { ExperimentReporter } from "../eval.ts";
 import { commonAttributes, type TraceExporter } from "../trace.ts";
+import { fromOpenAIContent, toOpenAIContent } from "../prompt/parts.ts";
 import { hashPrompt, parsePrompt, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
 
 export interface BraintrustOptions {
@@ -53,7 +54,6 @@ interface Row {
   } | null;
 }
 
-type NativeMessage = { role: "system" | "user" | "assistant"; content: string };
 type Body = Pick<Row, "name" | "slug" | "prompt_data"> & {
   description: string;
   tags: string[];
@@ -65,11 +65,10 @@ const NAME = /^[a-z0-9][a-z0-9_-]*(\/[a-z0-9][a-z0-9_-]*)*$/;
 /** Braintrust slugs accept "/" (verified live), so a prompt's slug is its name. */
 const toSlug = (name: string) => name;
 
-/** Detects edits made in the Braintrust UI after our push, which make the envelope's emulated fields stale. */
-function fingerprint(prompt: unknown): string {
+/** What the Braintrust UI can change about the body of a prompt: its messages, or its completion text. */
+function nativeFingerprint(prompt: unknown): string {
   const p = prompt as { type?: string; messages?: { role: string; content: unknown }[]; content?: string };
-  const basis = p?.type === "chat" ? (p.messages ?? []).map((m) => [m.role, m.content]) : (p?.content ?? null);
-  return createHash("sha256").update(JSON.stringify(basis)).digest("hex").slice(0, 16);
+  return fingerprint(p?.type === "chat" ? (p.messages ?? []).map((m) => [m.role, m.content]) : (p?.content ?? null));
 }
 
 function encode(def: PromptDefinition): { body: Body; needsEnvelope: boolean } {
@@ -84,7 +83,8 @@ function encode(def: PromptDefinition): { body: Body; needsEnvelope: boolean } {
     prompt = { type: "completion", content: def.text };
     if (def.tools) emulated.push("tools"); // completion prompts have nowhere to put tools
   } else {
-    const native = def.messages.filter((m): m is NativeMessage => "content" in m);
+    // Braintrust stores messages in the OpenAI format, attachments included.
+    const native = def.messages.flatMap((m) => ("content" in m ? [{ role: m.role, content: toOpenAIContent(m.content) }] : []));
     // No placeholder message type exists; the full list travels in the envelope.
     if (native.length !== def.messages.length) emulated.push("messages" as keyof PromptDefinition);
     prompt = { type: "chat", messages: native, ...(openaiTools ? { tools: JSON.stringify(openaiTools) } : {}) };
@@ -111,7 +111,7 @@ function encode(def: PromptDefinition): { body: Body; needsEnvelope: boolean } {
   if (def.model?.params) emulated.push("model");
   if (def.archived) emulated.push("archived");
   const needsEnvelope = emulated.some((key) => key !== "model");
-  const envelope = { ...packEnvelope(def, emulated), native: fingerprint(prompt) };
+  const envelope = { ...packEnvelope(def, emulated), native: nativeFingerprint(prompt) };
   return {
     needsEnvelope,
     body: {
@@ -135,7 +135,7 @@ function decode(row: Pick<Row, "name" | "slug" | "description" | "tags" | "metad
     | { type?: string; messages?: { role: string; content: unknown }[]; tools?: string | null; content?: string }
     | undefined;
   const envelope = unpackEnvelope(row.metadata) as (ReturnType<typeof unpackEnvelope> & { native?: string }) | undefined;
-  const emulated = envelope && envelope.native === fingerprint(prompt) ? envelope.fields : {};
+  const emulated = envelope && envelope.native === nativeFingerprint(prompt) ? envelope.fields : {};
 
   const { [ENVELOPE_KEY]: _, ...userMetadata } = row.metadata ?? {};
   const { response_format, ...params } = row.prompt_data?.options?.params ?? {};
@@ -192,9 +192,12 @@ function decode(row: Pick<Row, "name" | "slug" | "description" | "tags" | "metad
   const messages: PromptMessage[] =
     (emulated as { messages?: PromptMessage[] }).messages ??
     (prompt.messages ?? []).map((m) => {
-      if (typeof m.content !== "string") throw fail("message content is not plain text");
       if (m.role !== "system" && m.role !== "user" && m.role !== "assistant") throw fail(`role "${m.role}"`);
-      return { role: m.role, content: m.content };
+      try {
+        return { role: m.role, content: fromOpenAIContent(m.content) };
+      } catch (error) {
+        throw fail((error as Error).message);
+      }
     });
   return parsePrompt({ type: "chat", messages, ...common });
 }
