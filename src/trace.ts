@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
+import { fetchWithRetry } from "./http.ts";
 import type { Masker } from "./masking.ts";
 
 /**
@@ -154,8 +155,15 @@ export interface TraceExportOptions {
   batchSize?: number;
   /** Buffered mode: send at least this often. Default 2000. */
   intervalMs?: number;
-  /** Give up on a platform that has not answered after this long. Default 10000. */
+  /** Give up on a platform that has not answered after this long, across all attempts. Default 10000. */
   timeoutMs?: number;
+  /**
+   * Extra attempts when a platform is unreachable or answers 429/5xx. Default 2 in the background
+   * modes and 0 in "blocking" mode, where every attempt would be added to your response time.
+   */
+  retries?: number;
+  /** First wait between attempts; doubles each time. Default 500. */
+  retryDelayMs?: number;
 }
 
 export interface TracerOptions extends TraceExportOptions {
@@ -298,13 +306,18 @@ export class Tracer {
 
   private async send(exporter: TraceExporter, spans: SpanRecord[]): Promise<void> {
     try {
-      const response = await (exporter.fetch ?? fetch)(exporter.url, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...exporter.headers },
-        body: JSON.stringify(toOtlp(spans, exporter.attributes)),
-        // A platform that hangs must not hold a blocking caller, or a shutdown flush, forever.
-        signal: AbortSignal.timeout(this.options.timeoutMs ?? 10_000),
-      });
+      // A platform that hangs must not hold a blocking caller, or a shutdown flush, forever.
+      const signal = AbortSignal.timeout(this.options.timeoutMs ?? 10_000);
+      const response = await fetchWithRetry(
+        exporter.fetch ?? fetch,
+        exporter.url,
+        { method: "POST", headers: { "content-type": "application/json", ...exporter.headers }, body: JSON.stringify(toOtlp(spans, exporter.attributes)), signal },
+        {
+          retries: this.options.retries ?? (this.options.mode === "blocking" ? 0 : 2),
+          ...(this.options.retryDelayMs === undefined ? {} : { baseDelayMs: this.options.retryDelayMs }),
+          signal,
+        },
+      );
       if (!response.ok) throw new Error(`${new URL(exporter.url).host} rejected ${spans.length} span(s): ${response.status} ${(await response.text().catch(() => "")).slice(0, 200)}`);
     } catch (error) {
       const report = this.options.onError ?? ((e: Error) => console.warn(`tas: trace export failed: ${e.message}`));
