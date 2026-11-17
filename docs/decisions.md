@@ -130,7 +130,12 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
 - **Scorers are plain functions** `({ input, output, expected, metadata }) => score`, named by their key in `scorers`. The same shape as `autoevals`, so those work unchanged. Built in: `exactMatch`, `includes`, and `judge`, which runs an ordinary prompt as an LLM judge.
 - **One failing item never stops a run.** A task that throws marks the item as errored and skips its scorers; a scorer that throws loses only its own score for that item. Errors are counted in the summary but only `thresholds` make a run fail.
 - **Results are returned even if reporting fails**; each platform's outcome is in `result.reports`.
-- **Datasets are JSONL files** (`<name>.dataset.jsonl`, one item per line), or plain arrays in code. Reporting a run creates or updates the dataset on the platform. *Not built:* pulling a dataset curated in a vendor UI back into a file.
+- **Datasets are JSONL files** (`<name>.dataset.jsonl`, one item per line), or plain arrays in code. Reporting a run creates or updates the dataset on the platform.
+- **Datasets sync in both directions with explicit commands**, `tas datasets pull|push|list` (verified live on all three, including non-object inputs and a pull after an experiment). There is no lockfile and no canonical side for datasets:
+  - *Pull:* the platform's version of an item wins; the file keeps its order; new items are appended; rows only the file has are kept. Pull never deletes a row from your file.
+  - *Push:* items are upserted by id. A row removed from the file stays on the platform. Push never deletes there.
+  - An id that is only the hash of the input is not written to the file.
+  - *Caveat:* because nothing is ever deleted by sync, removing an item everywhere means deleting it in the vendor UI and in the file.
 - **Item ids default to a hash of the input**, so the same item is recognised across runs and platforms upsert instead of duplicating (verified live on all three). Two items with the same input need explicit ids.
 - **Every run gets a unique name** (`<name>-<timestamp>`), so a re-run never overwrites an earlier experiment.
 - **Each item runs inside its own trace tagged `eval`.** *Caveat:* if tracing is on, eval traffic lands in the same place as real traffic, distinguishable only by that tag and its metadata.
@@ -138,7 +143,8 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
 - **How each platform stores a run:**
   - *Braintrust:* a dataset (rows upserted by id) and an experiment whose rows link back to it. Score comments and scorer errors go in row metadata. The result includes the experiment URL.
   - *Langfuse:* a dataset and items, then one trace per item carrying experiment attributes, then scores on those traces. There is no REST call to create a run. No URL is returned.
-  - *LangSmith:* one upload call. Inputs and outputs must be objects, so other values are wrapped as `{ input: ... }` / `{ output: ... }`. An errored item is stored with `{ error }` as its output. LangSmith requires start and end times to be strictly ordered, so times recorded in the same millisecond are nudged apart. No URL is returned.
+  - *LangSmith:* an ordinary dataset, a session bound to it, one run per row bound to its example, and feedback per score, which is how LangSmith's own SDK records experiments. Its one-call experiment upload is not used: it only accepts datasets it created itself, which could then not be pushed to or edited normally (found live). Inputs and outputs must be objects, so other values are wrapped as `{ input: ... }` / `{ output: ... }`, and the wrapping is remembered so a pull returns the original value. A run must end after it starts, so an instant task's end time is nudged by a millisecond. No URL is returned. *Caveat:* it uses LangSmith's v1 sessions endpoint, which LangSmith has announced it will remove on 2027-07-01.
+  - *Item ids on each platform:* Braintrust uses ours directly. Langfuse ids are unique per project, so ours are prefixed with the dataset name and the prefix is removed on pull. LangSmith needs UUIDs, so ours are hashed into one and the original is kept in the example's metadata.
 - **Langfuse datasets cannot be deleted through its API**, so the cleanup script leaves them for the UI.
 
 ## Multi-tenancy

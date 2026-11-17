@@ -1,6 +1,7 @@
 export * from "./adapter.ts";
 export * from "./client.ts";
 export * from "./config.ts";
+export * from "./dataset.ts";
 export * from "./eval.ts";
 export * from "./gateway.ts";
 export * from "./http.ts";

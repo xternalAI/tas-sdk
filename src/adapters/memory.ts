@@ -1,4 +1,5 @@
 import type { PlatformAdapter, PromptRegistry, RemotePrompt } from "../adapter.ts";
+import type { Dataset, DatasetStore } from "../dataset.ts";
 import { hashPrompt, parsePrompt } from "../prompt/model.ts";
 
 /** In-process platform: the reference adapter for tests, local dev and the conformance suite. */
@@ -62,5 +63,22 @@ export function memory(): PlatformAdapter {
     },
   };
 
-  return { id: "memory", prompts };
+  const stored = new Map<string, Dataset>();
+  const datasets: DatasetStore = {
+    async list() {
+      return [...stored.keys()];
+    },
+    async pull(name) {
+      const dataset = stored.get(name);
+      return dataset ? structuredClone(dataset) : null;
+    },
+    async push(dataset) {
+      const existing = stored.get(dataset.name) ?? { name: dataset.name, items: [] };
+      const items = new Map(existing.items.map((item) => [item.id, item]));
+      for (const item of dataset.items) items.set(item.id, structuredClone(item)); // upsert by id, keep the rest
+      stored.set(dataset.name, { ...existing, ...(dataset.description ? { description: dataset.description } : {}), items: [...items.values()] });
+    },
+  };
+
+  return { id: "memory", prompts, datasets };
 }

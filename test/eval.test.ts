@@ -293,33 +293,48 @@ describe("experiment reporting", () => {
     expect(http.calls[5]!.body).toMatchObject({ traceId: spans[0].traceId, observationId: spans[0].spanId, name: "exact", value: 1, dataType: "NUMERIC", comment: "compared" });
   });
 
-  it("LangSmith: one upload, with inputs and outputs wrapped as objects and stable example ids", async () => {
-    const http = recording(() => ({}));
+  it("LangSmith: an ordinary dataset, a session bound to it, one run per row bound to its example, feedback per score", async () => {
+    const created: any[] = [];
+    const http = recording((path, method) => {
+      if (path === "/api/v1/datasets" && method === "GET") return created.length ? [{ id: "ds-1", name: "baltic-capitals" }] : [];
+      if (path === "/api/v1/datasets" && method === "POST") return created.push(1), {};
+      if (path === "/api/v1/examples") return created.length > 1 ? created.slice(1) : [];
+      if (path === "/api/v1/sessions") return { id: "session-1" };
+      return {};
+    });
     const adapter = langsmith({ apiKey: "k", fetch: http.fetch });
     const first = await run(adapter);
+    const calls = http.calls.splice(0);
+    created.push(...calls.find((c) => c.path === "/api/v1/examples/bulk")!.body);
     await run(adapter);
+
     expect(first.reports).toEqual([{ platform: "langsmith" }]);
-    expect(http.calls.map((c) => c.path)).toEqual(["/api/v1/datasets/upload-experiment", "/api/v1/datasets/upload-experiment"]);
-    const body = http.calls[0]!.body;
-    expect(body).toMatchObject({ experiment_name: first.runName, dataset_name: "baltic-capitals", experiment_metadata: { model: "gpt-5", evaluation: "capitals" } });
-    expect(body.results[0]).toMatchObject({
-      inputs: { country: "Latvia" },
-      expected_outputs: { output: "Riga" },
-      actual_outputs: { output: "Riga" },
-      evaluation_scores: [{ key: "exact", score: 1, comment: "compared" }],
-      run_name: "capitals",
-      run_metadata: { item: "lv" },
-    });
-    expect(body.results[0].row_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    expect(body.results[2]).toMatchObject({ actual_outputs: { error: "unknown country" }, evaluation_scores: [] });
-    expect(http.calls[1]!.body.results.map((r: any) => r.row_id)).toEqual(body.results.map((r: any) => r.row_id)); // same examples on a re-run
-    // LangSmith requires experiment start < row start < row end < experiment end, strictly; an instant task gives equal times.
-    const at = (text: string) => new Date(text).getTime();
-    for (const r of body.results) {
-      expect(at(body.experiment_start_time)).toBeLessThan(at(r.start_time));
-      expect(at(r.start_time)).toBeLessThan(at(r.end_time));
-      expect(at(r.end_time)).toBeLessThan(at(body.experiment_end_time));
-    }
+    const sequence = (list: typeof calls) => list.map((c) => `${c.method} ${c.path.split("?")[0]}`);
+    expect(sequence(calls)).toEqual([
+      "GET /api/v1/datasets", "POST /api/v1/datasets", "GET /api/v1/datasets", "GET /api/v1/examples", "POST /api/v1/examples/bulk",
+      "GET /api/v1/datasets", "POST /api/v1/sessions",
+      "POST /api/v1/runs", "POST /api/v1/feedback", "POST /api/v1/runs", "POST /api/v1/feedback", "POST /api/v1/runs",
+      "PATCH /api/v1/sessions/session-1",
+    ]);
+    const examples = calls[4]!.body;
+    // Inputs and outputs must be objects in LangSmith: other values are wrapped, and the wrapping is remembered.
+    expect(examples[0]).toMatchObject({ dataset_id: "ds-1", inputs: { country: "Latvia" }, outputs: { output: "Riga" }, metadata: { __tas: { id: "lv", wrapped: ["output"] } } });
+    expect(examples[0].id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(calls[6]!.body).toMatchObject({ name: first.runName, reference_dataset_id: "ds-1", extra: { metadata: { model: "gpt-5", evaluation: "capitals" } } });
+
+    const [okRun, feedback] = [calls[7]!.body, calls[8]!.body];
+    expect(okRun).toMatchObject({ name: "capitals", run_type: "chain", session_id: "session-1", reference_example_id: examples[0].id, inputs: { country: "Latvia" }, outputs: { output: "Riga" }, extra: { metadata: { item: "lv" } } });
+    expect(okRun.trace_id).toBe(okRun.id);
+    expect(okRun.dotted_order).toMatch(new RegExp(`^\\d{8}T\\d{12}Z${okRun.id}$`));
+    expect(new Date(okRun.end_time).getTime()).toBeGreaterThan(new Date(okRun.start_time).getTime()); // an instant task still ends after it starts
+    expect(feedback).toEqual({ run_id: okRun.id, trace_id: okRun.id, key: "exact", score: 1, comment: "compared" });
+    const errored = calls[11]!.body;
+    expect(errored).toMatchObject({ error: "unknown country" });
+    expect(errored.outputs).toBeUndefined();
+
+    // A re-run updates the same examples instead of creating new ones.
+    expect(sequence(http.calls).slice(0, 3)).toEqual(["GET /api/v1/datasets", "GET /api/v1/examples", "PATCH /api/v1/examples/bulk"]);
+    expect(http.calls[2]!.body.map((e: any) => e.id)).toEqual(examples.map((e: any) => e.id));
   });
 });
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readdir, writeFile } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createClient } from "./client.ts";
 import type { TasConfig, TasProfiles } from "./config.ts";
+import { DATASET_EXTENSION, pullDataset, pushDataset } from "./dataset.ts";
 import type { EvalDefinition } from "./eval.ts";
 import { loadPrompts, writePromptSchema } from "./prompt/file.ts";
 import { generatePromptTypes } from "./prompt/types.ts";
@@ -23,6 +24,13 @@ const USAGE = `tas prompts <status|pull|push|delete|schema|types> [names...]
            validation and autocomplete of *.prompt.yaml files
   types    write prompts.ts into the prompts directory: a TypeScript interface of
            every prompt's variables, placeholders and output, for createClient<Prompts>()
+
+tas datasets <list|pull|push> [names...]
+
+  list     datasets on the platform
+  pull     platform -> <name>.dataset.jsonl. The platform's version of an item wins;
+           rows only your file has are kept. No names: every dataset on the platform.
+  push     file -> platform, upserting items by id. No names: every dataset file.
 
 tas eval <files...>
 
@@ -91,6 +99,7 @@ async function main(argv: string[]): Promise<number> {
     },
   });
   if (positionals[0] === "eval" && !values.help) return runEvals(positionals.slice(1), values.config, values.profile);
+  if (positionals[0] === "datasets" && !values.help) return runDatasets(positionals[1], positionals.slice(2), values.config, values.profile);
   const [group, command, ...names] = positionals;
   if (values.help || group !== "prompts" || !command || !["status", "pull", "push", "delete", "schema", "types"].includes(command)) {
     console.log(USAGE);
@@ -145,6 +154,39 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "pull") return report(await pull(ctx, { force: values.force, ...only }));
   return report(await push(ctx, { force: values.force, ...(values.label ? { labels: values.label } : {}), ...only }));
+}
+
+async function runDatasets(command: string | undefined, names: string[], configPath: string | undefined, profile: string | undefined): Promise<number> {
+  if (!command || !["list", "pull", "push"].includes(command)) {
+    console.log(USAGE);
+    return 2;
+  }
+  const { config } = await loadConfig(configPath, profile);
+  const store = config.platform.datasets;
+  if (!store) throw new Error(`platform "${config.platform.id}" does not store datasets`);
+  const dir = resolve(config.datasetsDir ?? "datasets");
+
+  if (command === "list") {
+    const all = await store.list();
+    console.log(all.length ? all.sort().join("\n") : "no datasets");
+    return 0;
+  }
+  if (command === "pull") {
+    let missing = false;
+    for (const name of names.length ? names : await store.list()) {
+      const r = await pullDataset(dir, store, name);
+      missing ||= r.action === "missing";
+      console.log(r.action === "missing" ? `missing    ${name}  (not on the platform)` : `pulled     ${name}  ${r.items} items  (${r.added} new, ${r.updated} changed, ${r.localOnly} only in the file)`);
+    }
+    return missing ? 1 : 0;
+  }
+  const files = names.length ? names : (await readdir(dir, { recursive: true }).catch(() => [] as string[])).filter((f) => f.endsWith(DATASET_EXTENSION)).map((f) => f.slice(0, -DATASET_EXTENSION.length).split(sep).join("/")).sort();
+  for (const name of files) {
+    const r = await pushDataset(dir, store, name);
+    console.log(`pushed     ${name}  ${r.items} items`);
+  }
+  if (!files.length) console.log("no dataset files");
+  return 0;
 }
 
 async function runEvals(files: string[], configPath: string | undefined, profile: string | undefined): Promise<number> {

@@ -39,6 +39,8 @@ export interface TasConfig {
   prompts?: PromptDefinition[];
   /** Where the CLI reads and writes prompt files. Default "./prompts". */
   promptsDir?: string;
+  /** Where the CLI reads and writes dataset files. Default "./datasets". */
+  datasetsDir?: string;
   gateway?: GatewayConfig;
   masking?: MaskingConfig;
   /**
