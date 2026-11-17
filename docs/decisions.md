@@ -66,7 +66,7 @@ platform detail lives in [platform-mapping.md](platform-mapping.md).
 
 ## Invocation
 
-Pinned by `test/run.test.ts`. **Not yet run against a real gateway**: only against a scripted fake.
+Pinned by `test/run.test.ts`. Verified live on 2026-11-17 against a local Ollama model (`test/gateway.live.test.ts`): plain run, structured output, a tool round-trip and chat. The Braintrust gateway accepted the request and key but had no provider configured, so no hosted gateway has returned a completion yet.
 
 - **One wire format: OpenAI chat completions.** `run` posts to `<gateway.baseURL>/chat/completions`. Any gateway or provider that speaks it works; nothing else does. *Caveat:* provider-specific features outside that format (Anthropic-native tools, the OpenAI Responses API) are not reachable.
 - **The prompt drives the call.** Model, settings, tools and output schema come from the prompt; per-call `model`, `params`, `output` and `tools` override them.
@@ -136,6 +136,7 @@ Pinned by `test/run.test.ts`. **Not yet run against a real gateway**: only again
 ## Development process
 
 - **Live tests are opt-in:** `pnpm test:live`, with credentials in `.env`. Plain `pnpm test` never touches a vendor.
+- **The live invocation test needs any OpenAI-compatible endpoint** (`TAS_LIVE_GATEWAY_URL`, `TAS_LIVE_GATEWAY_MODEL`); a local Ollama is enough and costs nothing. It asserts on what the SDK did, not on the model's wording.
 - **Live tests leave prompts behind** under a `tas-live-<timestamp>/` prefix. `pnpm cleanup:live` removes them and is run on request, not automatically.
 
 ## Open questions
