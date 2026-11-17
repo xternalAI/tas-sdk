@@ -1,7 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { parse, stringify } from "yaml";
-import { parsePrompt, type PromptDefinition } from "./model.ts";
+import { parsePrompt, promptFileSchema, type PromptDefinition } from "./model.ts";
 
 /**
  * One prompt per file: `<promptsDir>/support/triage.prompt.yaml` is the prompt
@@ -9,6 +9,8 @@ import { parsePrompt, type PromptDefinition } from "./model.ts";
  * the file; `type` is inferred from whether the file has `messages` or `text`.
  */
 export const PROMPT_EXTENSION = ".prompt.yaml";
+/** Written at the root of the prompts directory; prompt files point their editor at it. */
+export const SCHEMA_FILE = "prompt.schema.json";
 
 /** Fixed key order so files diff cleanly whoever wrote them. */
 const KEY_ORDER = ["description", "archived", "model", "messages", "text", "tools", "output", "tags", "metadata"] as const;
@@ -54,9 +56,23 @@ export async function loadPrompts(dir: string): Promise<PromptDefinition[]> {
   );
 }
 
+/** Write (or refresh) the JSON Schema that gives editors validation and autocomplete for prompt files. */
+export async function writePromptSchema(dir: string): Promise<string> {
+  const path = join(dir, SCHEMA_FILE);
+  const content = JSON.stringify(promptFileSchema, null, 2) + "\n";
+  await mkdir(dir, { recursive: true });
+  if ((await readFile(path, "utf8").catch(() => "")) !== content) await writeFile(path, content);
+  return path;
+}
+
+/**
+ * Write a prompt to its file. The first line is a comment the YAML language server reads to find
+ * the schema, so the file validates and autocompletes in editors with no setup.
+ */
 export async function writePrompt(dir: string, definition: PromptDefinition): Promise<string> {
   const path = promptPath(dir, definition.name);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, stringifyPrompt(definition));
+  const schema = relative(dirname(path), await writePromptSchema(dir)).split(sep).join("/");
+  await writeFile(path, `# yaml-language-server: $schema=${schema}\n${stringifyPrompt(definition)}`);
   return path;
 }

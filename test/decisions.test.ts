@@ -257,7 +257,7 @@ describe("decisions: archiving", () => {
       await writePrompt(dir, live);
       await sync.push(c);
       await writePrompt(dir, archived);
-      expect(await readFile(promptPath(dir, "old"), "utf8")).toBe("archived: true\ntext: hi\ntags:\n  - team-a\n");
+      expect(await readFile(promptPath(dir, "old"), "utf8")).toBe("# yaml-language-server: $schema=prompt.schema.json\narchived: true\ntext: hi\ntags:\n  - team-a\n");
       expect(await sync.push(c)).toMatchObject([{ action: "pushed" }]);
       expect((await registry.get({ name: "old" }))!.definition.archived).toBe(true);
     } finally {

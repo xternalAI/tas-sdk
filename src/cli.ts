@@ -6,10 +6,10 @@ import { parseArgs } from "node:util";
 import { createClient } from "./client.ts";
 import type { TasConfig, TasProfiles } from "./config.ts";
 import type { EvalDefinition } from "./eval.ts";
-import { loadPrompts } from "./prompt/file.ts";
+import { loadPrompts, writePromptSchema } from "./prompt/file.ts";
 import { pull, push, remove, status, type SyncContext, type SyncResult } from "./sync.ts";
 
-const USAGE = `tas prompts <status|pull|push|delete> [names...]
+const USAGE = `tas prompts <status|pull|push|delete|schema> [names...]
 
   status   compare prompt files with the platform
   pull     platform -> files
@@ -17,6 +17,8 @@ const USAGE = `tas prompts <status|pull|push|delete> [names...]
   delete   permanently delete the named prompts: every version on the platform,
            plus the local file. To retire a prompt reversibly, set
            "archived: true" in its file and push instead.
+  schema   write prompt.schema.json into the prompts directory, for editor
+           validation and autocomplete of *.prompt.yaml files
 
 tas eval <files...>
 
@@ -86,12 +88,19 @@ async function main(argv: string[]): Promise<number> {
   });
   if (positionals[0] === "eval" && !values.help) return runEvals(positionals.slice(1), values.config, values.profile);
   const [group, command, ...names] = positionals;
-  if (values.help || group !== "prompts" || !command || !["status", "pull", "push", "delete"].includes(command)) {
+  if (values.help || group !== "prompts" || !command || !["status", "pull", "push", "delete", "schema"].includes(command)) {
     console.log(USAGE);
     return values.help ? 0 : 2;
   }
 
   const { config, target } = await loadConfig(values.config, values.profile);
+  if (command === "schema") {
+    const written = await writePromptSchema(resolve(config.promptsDir ?? "prompts"));
+    console.log(`wrote ${written}`);
+    console.log(`Files written by "tas prompts pull" reference it on their first line. For files you write by hand, add that line`);
+    console.log(`or map it in your editor, e.g. VS Code settings: "yaml.schemas": { "${written}": "*.prompt.yaml" }`);
+    return 0;
+  }
   const registry = config.platform.prompts;
   if (!registry) throw new Error(`platform "${config.platform.id}" has no prompt registry`);
   const ctx: SyncContext = {

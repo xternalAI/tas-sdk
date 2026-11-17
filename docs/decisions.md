@@ -35,6 +35,8 @@ platform detail lives in [platform-mapping.md](platform-mapping.md).
 - **`model.id` is whatever your gateway expects.** It is not normalised. *Caveat:* gateways name models differently, so the same prompt may need a different id per gateway.
 - **`model.params` uses OpenAI parameter names.** `model.id` is required whenever params are set.
 
+- **Prompt files have a JSON Schema for editors.** `tas prompts schema` writes `prompt.schema.json` into the prompts directory; files written by the SDK start with a `# yaml-language-server: $schema=...` comment pointing at it, so they validate and autocomplete with no editor setup. Every field has a description, which is the hover text. *Caveat:* files written by hand need that first line added, or an editor mapping such as VS Code's `yaml.schemas`. The schema is draft-07, generated from the same TypeBox definitions the SDK validates with, so the two cannot drift.
+
 ## Templates and variables
 
 - **Portable subset only:** `{{name}}` and `{{nested.path}}`. `{{{name}}}` and `{{&name}}` are accepted as the same thing, since nothing is HTML-escaped.
