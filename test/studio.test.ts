@@ -4,12 +4,23 @@
  * it edits the same files as everything else, serves this machine only, and never trusts a request
  * that does not carry its session token.
  */
-import { request as httpRequest } from "node:http";
+
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkPortability, loadPrompts, memory, portabilityLevel, promptPath, writePrompt, type PlatformAdapter, type PromptDefinition, type TasConfig } from "../src/index.ts";
+import {
+  checkPortability,
+  loadPrompts,
+  memory,
+  type PlatformAdapter,
+  type PromptDefinition,
+  portabilityLevel,
+  promptPath,
+  type TasConfig,
+  writePrompt,
+} from "../src/index.ts";
 import { createStudioApi, inspectPrompt } from "../src/studio/api.ts";
 import { startStudio } from "../src/studio/server.ts";
 import { cli, SDK } from "./cli.ts";
@@ -21,8 +32,16 @@ beforeEach(async () => {
 });
 afterEach(() => rm(dir, { recursive: true, force: true }));
 
-const greet: PromptDefinition = { type: "chat", name: "team/greet", model: { id: "gpt-5" }, messages: [{ role: "system", content: "Be kind." }, { placeholder: "history" }, { role: "user", content: "Hi {{user.name}}" }] };
-const by = (def: PromptDefinition, platform: string) => checkPortability(def).filter((n) => n.platform === platform).map((n) => `${n.level}: ${n.message}`);
+const greet: PromptDefinition = {
+  type: "chat",
+  name: "team/greet",
+  model: { id: "gpt-5" },
+  messages: [{ role: "system", content: "Be kind." }, { placeholder: "history" }, { role: "user", content: "Hi {{user.name}}" }],
+};
+const by = (def: PromptDefinition, platform: string) =>
+  checkPortability(def)
+    .filter((n) => n.platform === platform)
+    .map((n) => `${n.level}: ${n.message}`);
 
 describe("portability", () => {
   it("a plain prompt is native everywhere", () => {
@@ -41,11 +60,15 @@ describe("portability", () => {
   it("says what LangSmith cannot name, bind or template", () => {
     expect(by({ type: "text", name: "1st", text: "x" }, "langsmith")[0]).toMatch(/^error: The name "1st" cannot be stored/);
     expect(by({ type: "text", name: "a--b", text: "x" }, "langsmith")[0]).toMatch(/^error: .*"--" is reserved/);
-    expect(by({ type: "text", name: "a/b", text: "x" }, "langsmith")).toEqual(['info: Stored as "a--b": LangSmith names cannot contain "/".']);
+    expect(by({ type: "text", name: "a/b", text: "x" }, "langsmith")).toEqual([
+      'info: Stored as "a--b": LangSmith names cannot contain "/".',
+    ]);
     const tools = [{ name: "t", parameters: {} }];
     expect(by({ type: "text", name: "x", text: "x", tools }, "langsmith")[0]).toMatch(/^warning: Tools are kept in metadata only/);
     expect(by({ type: "text", name: "x", text: "x", tools, model: { id: "gpt-5" } }, "langsmith")).toEqual([]);
-    expect(by({ type: "text", name: "x", text: "x", output: { schema: {} } }, "langsmith")[0]).toMatch(/^warning: The output schema is kept in metadata only/);
+    expect(by({ type: "text", name: "x", text: "x", output: { schema: {} } }, "langsmith")[0]).toMatch(
+      /^warning: The output schema is kept in metadata only/,
+    );
     expect(by({ type: "chat", name: "x", messages: [{ role: "user", content: "x" }], output: { schema: {} } }, "langsmith")).toEqual([]);
   });
 
@@ -54,7 +77,11 @@ describe("portability", () => {
     expect(by(vision, "braintrust")).toEqual([]);
     expect(by(vision, "langfuse")[0]).toMatch(/^warning: Langfuse messages are text only/);
     expect(by(vision, "langsmith").some((n) => /^warning: File attachments are kept in metadata only/.test(n))).toBe(true);
-    const imagesOnly: PromptDefinition = { type: "chat", name: "x", messages: [{ role: "user", content: [{ type: "image", url: "{{u}}" }] }] };
+    const imagesOnly: PromptDefinition = {
+      type: "chat",
+      name: "x",
+      messages: [{ role: "user", content: [{ type: "image", url: "{{u}}" }] }],
+    };
     expect(by(imagesOnly, "langsmith")).toEqual([]);
     expect(portabilityLevel(checkPortability(vision))).toBe("warning");
   });
@@ -62,22 +89,38 @@ describe("portability", () => {
   it("lists what is merely kept in metadata as info, most serious notes first", () => {
     const full = fixtures[0]!;
     const notes = checkPortability({ ...full, archived: true });
-    expect(notes.map((n) => n.level)).toEqual([...notes.map((n) => n.level)].sort((a, b) => ["error", "warning", "info"].indexOf(a) - ["error", "warning", "info"].indexOf(b)));
-    expect(by(full, "braintrust")).toEqual([expect.stringMatching(/^info: Placeholders are kept in metadata/), expect.stringMatching(/^info: Braintrust drops settings/)]);
-    expect(by({ type: "text", name: "x", text: "x", tools: [{ name: "t", parameters: {} }] }, "braintrust")).toEqual([expect.stringMatching(/Tools on a text prompt/)]);
-    expect(by(full, "langfuse")).toEqual([expect.stringMatching(/description is kept in metadata/), expect.stringMatching(/Metadata is kept inside/)]);
-    for (const platform of ["braintrust", "langfuse", "langsmith"]) expect(by({ ...full, archived: true }, platform).some((n) => n.includes("archived flag"))).toBe(true);
+    expect(notes.map((n) => n.level)).toEqual(
+      [...notes.map((n) => n.level)].sort((a, b) => ["error", "warning", "info"].indexOf(a) - ["error", "warning", "info"].indexOf(b)),
+    );
+    expect(by(full, "braintrust")).toEqual([
+      expect.stringMatching(/^info: Placeholders are kept in metadata/),
+      expect.stringMatching(/^info: Braintrust drops settings/),
+    ]);
+    expect(by({ type: "text", name: "x", text: "x", tools: [{ name: "t", parameters: {} }] }, "braintrust")).toEqual([
+      expect.stringMatching(/Tools on a text prompt/),
+    ]);
+    expect(by(full, "langfuse")).toEqual([
+      expect.stringMatching(/description is kept in metadata/),
+      expect.stringMatching(/Metadata is kept inside/),
+    ]);
+    for (const platform of ["braintrust", "langfuse", "langsmith"])
+      expect(by({ ...full, archived: true }, platform).some((n) => n.includes("archived flag"))).toBe(true);
     expect(portabilityLevel(notes)).toBe("ok"); // info alone is not a problem
   });
 
   it("tas prompts check prints the notes and exits 1 only when something cannot be stored", async () => {
-    await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory() });\n`);
+    await writeFile(
+      join(dir, "tas.config.ts"),
+      `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory() });\n`,
+    );
     expect(await cli(["prompts", "check"], dir)).toEqual({ code: 0, out: "no prompts\n" });
     await writePrompt(join(dir, "prompts"), { type: "text", name: "fine", text: "Hi {{name}}" });
     await writePrompt(join(dir, "prompts"), { type: "text", name: "tooled", text: "x", tools: [{ name: "t", parameters: {} }] });
     const ok = await cli(["prompts", "check"], dir);
     expect(ok.code).toBe(0);
-    expect(ok.out).toMatch(/^ok {6}fine\nwarning tooled\n {8}warning langsmith: Tools are kept in metadata only[^\n]*\n {8}info {4}braintrust: /);
+    expect(ok.out).toMatch(
+      /^ok {6}fine\nwarning tooled\n {8}warning langsmith: Tools are kept in metadata only[^\n]*\n {8}info {4}braintrust: /,
+    );
     await writePrompt(join(dir, "prompts"), { type: "text", name: "9lives", text: "{{#a}}x{{/a}}" });
     const blocked = await cli(["prompts", "check", "9lives"], dir);
     expect(blocked.code).toBe(1);
@@ -96,7 +139,13 @@ describe("studio API", () => {
 
   it("describes itself and lists prompt files, including one that does not validate", async () => {
     const { call } = setup();
-    expect((await call("GET", "/api/info")).body).toEqual({ platform: "memory", canonical: "repo", promptsDir: dir, canSync: true, canRun: false });
+    expect((await call("GET", "/api/info")).body).toEqual({
+      platform: "memory",
+      canonical: "repo",
+      promptsDir: dir,
+      canSync: true,
+      canRun: false,
+    });
     expect((await call("GET", "/api/prompts")).body).toEqual([]);
     await writePrompt(dir, greet);
     await writePrompt(dir, { type: "text", name: "old", text: "x", archived: true, description: "Retired" });
@@ -124,12 +173,19 @@ describe("studio API", () => {
     const { call } = setup();
     const saved = (await call("PUT", "/api/prompts/hello", { source: `tags: [a]\n${yaml}` })) as { status: number; body: any };
     expect(saved.status).toBe(200);
-    expect(await readFile(promptPath(dir, "hello"), "utf8")).toBe("# yaml-language-server: $schema=prompt.schema.json\nmessages:\n  - role: user\n    content: Hello {{name}}\ntags:\n  - a\n");
+    expect(await readFile(promptPath(dir, "hello"), "utf8")).toBe(
+      "# yaml-language-server: $schema=prompt.schema.json\nmessages:\n  - role: user\n    content: Hello {{name}}\ntags:\n  - a\n",
+    );
     expect(saved.body.source).toBe("messages:\n  - role: user\n    content: Hello {{name}}\ntags:\n  - a\n"); // normalised, as on disk
-    expect(await loadPrompts(dir)).toEqual([{ type: "chat", name: "hello", messages: [{ role: "user", content: "Hello {{name}}" }], tags: ["a"] }]);
+    expect(await loadPrompts(dir)).toEqual([
+      { type: "chat", name: "hello", messages: [{ role: "user", content: "Hello {{name}}" }], tags: ["a"] },
+    ]);
 
     const invalid = await call("PUT", "/api/prompts/hello", { source: "mesages: []\n" });
-    expect(invalid).toEqual({ status: 422, body: { error: "the prompt is not valid", issues: [expect.stringContaining('unknown key "mesages"')] } });
+    expect(invalid).toEqual({
+      status: 422,
+      body: { error: "the prompt is not valid", issues: [expect.stringContaining('unknown key "mesages"')] },
+    });
     expect((await call("PUT", "/api/prompts/hello", { source: "a: [unclosed" })).status).toBe(422); // not even YAML
     expect((await loadPrompts(dir))[0]!.tags).toEqual(["a"]); // a failed save leaves the file alone
     expect(await call("PUT", "/api/prompts/Bad%20Name", { source: yaml })).toMatchObject({ status: 400 });
@@ -137,8 +193,14 @@ describe("studio API", () => {
 
   it("creates a starter prompt, refuses a duplicate or a bad name, and deletes the file only", async () => {
     const { call, platform } = setup();
-    expect((await call("POST", "/api/prompts", { name: "new/chat" })).body).toMatchObject({ name: "new/chat", variables: ["input"], definition: { type: "chat" } });
-    expect((await call("POST", "/api/prompts", { name: "new/text", type: "text" })).body).toMatchObject({ definition: { type: "text", text: "{{input}}" } });
+    expect((await call("POST", "/api/prompts", { name: "new/chat" })).body).toMatchObject({
+      name: "new/chat",
+      variables: ["input"],
+      definition: { type: "chat" },
+    });
+    expect((await call("POST", "/api/prompts", { name: "new/text", type: "text" })).body).toMatchObject({
+      definition: { type: "text", text: "{{input}}" },
+    });
     expect(await call("POST", "/api/prompts", { name: "new/chat" })).toMatchObject({ status: 409 });
     expect(await call("POST", "/api/prompts", { name: "Not Valid" })).toMatchObject({ status: 400 });
     expect(await call("POST", "/api/prompts", undefined)).toMatchObject({ status: 400 });
@@ -155,7 +217,11 @@ describe("studio API", () => {
     const good = (await call("POST", "/api/check", { name: "draft", source: "text: 'Hi {{a}} {{#b}}'\n" })).body as any;
     expect(good).toMatchObject({ variables: ["a"], level: "error", issues: [] });
     expect(good.notes[0]).toMatchObject({ platform: "all", level: "error" });
-    expect((await call("POST", "/api/check", { source: "text: 1\n" })).body).toMatchObject({ name: "untitled", definition: null, issues: [expect.any(String)] });
+    expect((await call("POST", "/api/check", { source: "text: 1\n" })).body).toMatchObject({
+      name: "untitled",
+      definition: null,
+      issues: [expect.any(String)],
+    });
     expect(await loadPrompts(dir)).toEqual([]);
     expect(inspectPrompt("x", "# yaml-language-server: $schema=whatever\ntext: hi\n").source).toBe("text: hi\n");
   });
@@ -163,11 +229,23 @@ describe("studio API", () => {
   it("previews rendered messages, with empty placeholders unless given", async () => {
     const { call } = setup();
     const source = "messages:\n  - placeholder: history\n  - role: user\n    content: Hi {{user.name}}\n";
-    expect((await call("POST", "/api/render", { name: "p", source, variables: { user: { name: "Jo" } } })).body).toEqual({ messages: [{ role: "user", content: "Hi Jo" }] });
-    const withHistory = await call("POST", "/api/render", { source, variables: { user: { name: "Jo" } }, placeholders: { history: [{ role: "assistant", content: "Hello" }] } });
+    expect((await call("POST", "/api/render", { name: "p", source, variables: { user: { name: "Jo" } } })).body).toEqual({
+      messages: [{ role: "user", content: "Hi Jo" }],
+    });
+    const withHistory = await call("POST", "/api/render", {
+      source,
+      variables: { user: { name: "Jo" } },
+      placeholders: { history: [{ role: "assistant", content: "Hello" }] },
+    });
     expect((withHistory.body as any).messages).toHaveLength(2);
-    expect(await call("POST", "/api/render", { source })).toEqual({ status: 422, body: { error: 'prompt "untitled": missing variable "user.name"' } });
-    expect(await call("POST", "/api/render", { source: "nope: 1\n" })).toMatchObject({ status: 422, body: { issues: [expect.any(String)] } });
+    expect(await call("POST", "/api/render", { source })).toEqual({
+      status: 422,
+      body: { error: 'prompt "untitled": missing variable "user.name"' },
+    });
+    expect(await call("POST", "/api/render", { source: "nope: 1\n" })).toMatchObject({
+      status: 422,
+      body: { issues: [expect.any(String)] },
+    });
   });
 
   it("reports sync status and pushes and pulls through the same engine as the CLI", async () => {
@@ -180,7 +258,9 @@ describe("studio API", () => {
       { name: "remote", state: "remote-only" },
       { name: "team/greet", state: "local-only" },
     ]);
-    expect((await call("POST", "/api/push", { names: ["team/greet"], labels: ["production"] })).body).toMatchObject([{ name: "team/greet", action: "pushed" }]);
+    expect((await call("POST", "/api/push", { names: ["team/greet"], labels: ["production"] })).body).toMatchObject([
+      { name: "team/greet", action: "pushed" },
+    ]);
     expect((await platform.prompts!.get({ name: "team/greet", label: "production" }))!.definition).toEqual(greet);
     expect((await call("POST", "/api/push", { names: ["loopy"] })).body).toMatchObject([{ action: "refused", reason: "non-portable" }]);
     expect((await call("POST", "/api/push", { names: ["loopy"], force: true })).body).toMatchObject([{ action: "pushed" }]);
@@ -191,21 +271,49 @@ describe("studio API", () => {
 
   it("runs a saved prompt through the gateway when there is one", async () => {
     let sent: any;
-    const gateway = { baseURL: "https://gw.test/v1", fetch: (async (_u: unknown, init?: RequestInit) => ((sent = JSON.parse(String(init!.body))), new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "Hello Jo" } }], usage: { prompt_tokens: 4, completion_tokens: 2 } })))) as typeof fetch };
+    const gateway = {
+      baseURL: "https://gw.test/v1",
+      fetch: (async (_u: unknown, init?: RequestInit) => (
+        (sent = JSON.parse(String(init!.body))),
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "Hello Jo" } }],
+            usage: { prompt_tokens: 4, completion_tokens: 2 },
+          }),
+        )
+      )) as typeof fetch,
+    };
     const { call } = setup({ gateway });
     await writePrompt(dir, greet);
     expect((await call("GET", "/api/info")).body).toMatchObject({ canRun: true });
-    expect((await call("POST", "/api/run", { name: "team/greet", variables: { user: { name: "Jo" } } })).body).toEqual({ text: "Hello Jo", output: null, usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 }, model: "gpt-5", toolCalls: [] });
-    expect(sent.messages).toEqual([{ role: "system", content: "Be kind." }, { role: "user", content: "Hi Jo" }]);
-    expect((await call("POST", "/api/run", { name: "team/greet" })).body).toEqual({ error: 'prompt "team/greet": missing variable "user.name"' });
-    expect(await setup().call("POST", "/api/run", { name: "team/greet" })).toMatchObject({ status: 400, body: { error: expect.stringContaining("no gateway configured") } });
+    expect((await call("POST", "/api/run", { name: "team/greet", variables: { user: { name: "Jo" } } })).body).toEqual({
+      text: "Hello Jo",
+      output: null,
+      usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+      model: "gpt-5",
+      toolCalls: [],
+    });
+    expect(sent.messages).toEqual([
+      { role: "system", content: "Be kind." },
+      { role: "user", content: "Hi Jo" },
+    ]);
+    expect((await call("POST", "/api/run", { name: "team/greet" })).body).toEqual({
+      error: 'prompt "team/greet": missing variable "user.name"',
+    });
+    expect(await setup().call("POST", "/api/run", { name: "team/greet" })).toMatchObject({
+      status: 400,
+      body: { error: expect.stringContaining("no gateway configured") },
+    });
   });
 
   it("answers clearly for an unknown route and for a platform that cannot sync", async () => {
     const { call } = setup();
     expect(await call("GET", "/api/nope")).toEqual({ status: 404, body: { error: "no such route: GET /api/nope" } });
     const bare = createStudioApi({ config: { platform: { id: "bare" } as PlatformAdapter }, dir, target: "default" });
-    expect(await bare({ method: "GET", path: "/api/status" })).toEqual({ status: 400, body: { error: 'platform "bare" has no prompt registry' } });
+    expect(await bare({ method: "GET", path: "/api/status" })).toEqual({
+      status: 400,
+      body: { error: 'platform "bare" has no prompt registry' },
+    });
     expect((await bare({ method: "GET", path: "/api/info" })).body).toMatchObject({ canSync: false });
   });
 });
@@ -235,7 +343,11 @@ describe("studio server", () => {
 
       const auth = { "x-tas-token": studio.token, "content-type": "application/json" };
       expect(JSON.parse((await raw(`${studio.url}/api/prompts`, { headers: auth })).body)).toMatchObject([{ name: "team/greet" }]);
-      const saved = await raw(`${studio.url}/api/prompts/hello`, { method: "PUT", headers: auth, body: JSON.stringify({ source: "text: hi\n" }) });
+      const saved = await raw(`${studio.url}/api/prompts/hello`, {
+        method: "PUT",
+        headers: auth,
+        body: JSON.stringify({ source: "text: hi\n" }),
+      });
       expect(saved.status).toBe(200);
       expect((await loadPrompts(dir)).map((p) => p.name)).toEqual(["hello", "team/greet"]);
 
@@ -243,7 +355,10 @@ describe("studio server", () => {
       expect((await raw(`${studio.url}/api/prompts`, { headers: { "x-tas-token": "guess" } })).status).toBe(401);
       expect((await raw(`${studio.url}/elsewhere`)).status).toBe(404);
       expect((await raw(`${studio.url}/api/prompts/x`, { method: "PUT", headers: auth, body: "{not json" })).status).toBe(400);
-      expect((await raw(`${studio.url}/api/check`, { method: "POST", headers: auth, body: JSON.stringify({ source: "x".repeat(2_100_000) }) })).status).toBe(400);
+      expect(
+        (await raw(`${studio.url}/api/check`, { method: "POST", headers: auth, body: JSON.stringify({ source: "x".repeat(2_100_000) }) }))
+          .status,
+      ).toBe(400);
     } finally {
       await studio.close();
     }
@@ -256,18 +371,28 @@ describe("studio server", () => {
       const rebound = await raw(studio.url, { headers: { host: `evil.example:${port}`, "x-tas-token": studio.token } });
       expect(rebound.status).toBe(403);
       expect(rebound.body).not.toContain(studio.token);
-      expect((await raw(`${studio.url}/api/info`, { headers: { host: `localhost:${port}`, "x-tas-token": studio.token } })).status).toBe(200);
+      expect((await raw(`${studio.url}/api/info`, { headers: { host: `localhost:${port}`, "x-tas-token": studio.token } })).status).toBe(
+        200,
+      );
     } finally {
       await studio.close();
     }
   });
 
   it("tas studio serves until stopped, on the port asked for", async () => {
-    await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory() });\n`);
+    await writeFile(
+      join(dir, "tas.config.ts"),
+      `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory() });\n`,
+    );
     const stop = new AbortController();
     const lines: string[] = [];
     const { runCli } = await import("../src/cli.ts");
-    const running = runCli(["studio", "--port", "0"], { cwd: dir, log: (line) => lines.push(line), error: (line) => lines.push(line), signal: stop.signal });
+    const running = runCli(["studio", "--port", "0"], {
+      cwd: dir,
+      log: (line) => lines.push(line),
+      error: (line) => lines.push(line),
+      signal: stop.signal,
+    });
     while (!lines.length) await new Promise((r) => setTimeout(r, 5));
     const url = /Studio is running at (http:\/\/127\.0\.0\.1:\d+)/.exec(lines[0]!)![1]!;
     expect((await raw(url)).status).toBe(200);

@@ -69,7 +69,9 @@ export function jsonSchemaToType(schema: unknown, indent = ""): string {
       if (!properties.length) return "Record<string, unknown>";
       const required = new Set<string>(s.required ?? []);
       const inner = `${indent}  `;
-      const lines = properties.map(([name, child]) => `${inner}${key(name)}${required.has(name) ? "" : "?"}: ${jsonSchemaToType(child, inner)};`);
+      const lines = properties.map(
+        ([name, child]) => `${inner}${key(name)}${required.has(name) ? "" : "?"}: ${jsonSchemaToType(child, inner)};`,
+      );
       return `{\n${lines.join("\n")}\n${indent}}`;
     }
     default:
@@ -105,7 +107,10 @@ export function generatePromptTypes(definitions: PromptDefinition[], options: Ge
   const entries = [...definitions]
     .sort((a, b) => (a.name < b.name ? -1 : 1))
     .map((def) => {
-      const placeholders = extractPlaceholders(def).map((p) => JSON.stringify(p)).join(" | ") || "never";
+      const placeholders =
+        extractPlaceholders(def)
+          .map((p) => JSON.stringify(p))
+          .join(" | ") || "never";
       const output = def.output ? jsonSchemaToType(def.output.schema, "    ") : "unknown";
       const doc = def.description ? `  /** ${def.description.replaceAll("*/", "* /")} */\n` : "";
       return `${doc}  ${JSON.stringify(def.name)}: {\n    variables: ${variablesType(extractVariables(def), "    ")};\n    placeholders: ${placeholders};\n    output: ${output};\n  };`;

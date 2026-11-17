@@ -8,7 +8,7 @@
  * (adapters.test.ts, conformance.ts), invocation (run.test.ts), tracing and masking (trace.test.ts),
  * evals (eval.test.ts).
  */
-import { readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -26,18 +26,18 @@ import {
   langfuse,
   langsmith,
   memory,
+  type PlatformAdapter,
+  PromptArchivedError,
+  type PromptDefinition,
+  type PromptRegistry,
+  PromptValidationError,
   parsePrompt,
   promptPath,
-  PromptArchivedError,
-  PromptValidationError,
   renderPrompt,
+  type SpanRecord,
   sync,
   toOpenAIContent,
   writePrompt,
-  type PlatformAdapter,
-  type PromptDefinition,
-  type PromptRegistry,
-  type SpanRecord,
 } from "../src/index.ts";
 import { fixtures } from "./conformance.ts";
 import { fakeBraintrust, fakeLangfuse, fakeLangSmith } from "./fakes.ts";
@@ -56,12 +56,23 @@ describe("decisions: dependencies", () => {
 
   it("adapters never read credentials from the environment", async () => {
     const saved = { ...process.env };
-    Object.assign(process.env, { BRAINTRUST_API_KEY: "test-key", LANGSMITH_API_KEY: "ls-test", LANGFUSE_PUBLIC_KEY: "pk-test", LANGFUSE_SECRET_KEY: "sk-test" });
+    Object.assign(process.env, {
+      BRAINTRUST_API_KEY: "test-key",
+      LANGSMITH_API_KEY: "ls-test",
+      LANGFUSE_PUBLIC_KEY: "pk-test",
+      LANGFUSE_SECRET_KEY: "sk-test",
+    });
     try {
       // The environment holds keys the fakes would accept; the explicitly passed wrong ones must be what is sent.
-      await expect(braintrust({ apiKey: "wrong", projectId: "proj-1", fetch: fakeBraintrust().fetch }).prompts!.get({ name: "x" })).rejects.toMatchObject({ status: 401 });
-      await expect(langsmith({ apiKey: "wrong", fetch: fakeLangSmith().fetch }).prompts!.get({ name: "x" })).rejects.toMatchObject({ status: 401 });
-      await expect(langfuse({ publicKey: "pk-test", secretKey: "wrong", fetch: fakeLangfuse().fetch }).prompts!.get({ name: "x" })).rejects.toMatchObject({ status: 401 });
+      await expect(
+        braintrust({ apiKey: "wrong", projectId: "proj-1", fetch: fakeBraintrust().fetch }).prompts!.get({ name: "x" }),
+      ).rejects.toMatchObject({ status: 401 });
+      await expect(langsmith({ apiKey: "wrong", fetch: fakeLangSmith().fetch }).prompts!.get({ name: "x" })).rejects.toMatchObject({
+        status: 401,
+      });
+      await expect(
+        langfuse({ publicKey: "pk-test", secretKey: "wrong", fetch: fakeLangfuse().fetch }).prompts!.get({ name: "x" }),
+      ).rejects.toMatchObject({ status: 401 });
     } finally {
       process.env = saved;
     }
@@ -91,7 +102,9 @@ describe("decisions: canonical prompt model", () => {
 
   it("keeps chat and text prompts distinct", () => {
     expect(() => parsePrompt({ type: "chat", name: "x", messages: [] })).toThrow(/fewer than 1/);
-    expect(() => parsePrompt({ type: "chat", name: "x", messages: [{ role: "user", content: "a" }], text: "b" })).toThrow(/unknown key "text"/);
+    expect(() => parsePrompt({ type: "chat", name: "x", messages: [{ role: "user", content: "a" }], text: "b" })).toThrow(
+      /unknown key "text"/,
+    );
     expect(() => parsePrompt({ type: "chat", name: "x", messages: [{ role: "tool", content: "a" }] })).toThrow(PromptValidationError);
   });
 
@@ -131,7 +144,11 @@ describe("decisions: sync", () => {
     await sync.push(ctx());
     return { ...ctx(), canonical };
   };
-  const fileExists = () => readFile(promptPath(dir, "plain"), "utf8").then(() => true, () => false);
+  const fileExists = () =>
+    readFile(promptPath(dir, "plain"), "utf8").then(
+      () => true,
+      () => false,
+    );
 
   it("a file deleted locally is not pulled back when the repo is canonical, and the platform copy is never deleted", async () => {
     const c = await synced("repo");
@@ -205,7 +222,10 @@ describe("decisions: sync", () => {
     ]);
     // Neither direction touches it: pushing would overwrite something we could not even read.
     for (const direction of [sync.push, sync.pull]) {
-      expect((await direction(c, { force: true })).find((r) => r.name === "plain")).toMatchObject({ action: "skipped", reason: "unreadable" });
+      expect((await direction(c, { force: true })).find((r) => r.name === "plain")).toMatchObject({
+        action: "skipped",
+        reason: "unreadable",
+      });
     }
     expect((await registry.get({ name: "plain" }))!.definition.description).toBeUndefined();
     expect((await sync.pull(c)).find((r) => r.name === "legacy/completion_v1")).toMatchObject({ action: "unchanged" });
@@ -237,7 +257,9 @@ describe("decisions: archiving", () => {
   });
 
   it("mirrors the flag as an `archived` tag on every platform, without changing the user's tags", async () => {
-    const b = fakeBraintrust(), l = fakeLangfuse(), s = fakeLangSmith();
+    const b = fakeBraintrust(),
+      l = fakeLangfuse(),
+      s = fakeLangSmith();
     for (const reg of [bt(b), lf(l), ls(s)]) {
       await reg.push(archived);
       expect((await reg.get({ name: "old" }))!.definition).toEqual(archived);
@@ -248,7 +270,8 @@ describe("decisions: archiving", () => {
   });
 
   it("the flag in our metadata is the truth: removing the mirrored tag in a vendor UI does not unarchive", async () => {
-    const b = fakeBraintrust(), l = fakeLangfuse();
+    const b = fakeBraintrust(),
+      l = fakeLangfuse();
     await bt(b).push(archived);
     await lf(l).push(archived);
     (b.versions.get("old")![0] as any).tags = ["team-a"];
@@ -265,7 +288,9 @@ describe("decisions: archiving", () => {
       await writePrompt(dir, live);
       await sync.push(c);
       await writePrompt(dir, archived);
-      expect(await readFile(promptPath(dir, "old"), "utf8")).toBe("# yaml-language-server: $schema=prompt.schema.json\narchived: true\ntext: hi\ntags:\n  - team-a\n");
+      expect(await readFile(promptPath(dir, "old"), "utf8")).toBe(
+        "# yaml-language-server: $schema=prompt.schema.json\narchived: true\ntext: hi\ntags:\n  - team-a\n",
+      );
       expect(await sync.push(c)).toMatchObject([{ action: "pushed" }]);
       expect((await registry.get({ name: "old" }))!.definition.archived).toBe(true);
     } finally {
@@ -280,7 +305,9 @@ describe("decisions: attachments", () => {
 
   it("images and files are message parts whose url can be a variable; variables include them", () => {
     expect(extractVariables(vision)).toEqual(["audience", "question", "screenshot", "report", "report_name"]);
-    const [, user] = renderPrompt(vision, { variables: { audience: "ops", question: "What changed?", screenshot: png, report: "https://example.com/q3.pdf", report_name: "q3" } });
+    const [, user] = renderPrompt(vision, {
+      variables: { audience: "ops", question: "What changed?", screenshot: png, report: "https://example.com/q3.pdf", report_name: "q3" },
+    });
     expect(user!.content).toEqual([
       { type: "text", text: "Compare the screenshot with the report. What changed?" },
       { type: "image", url: png, detail: "high" },
@@ -297,7 +324,9 @@ describe("decisions: attachments", () => {
     expect(() => parsePrompt(withPart({ type: "image" }))).toThrow(PromptValidationError);
     expect(() => parsePrompt(withPart({ type: "image", url: "x", detail: "huge" }))).toThrow(PromptValidationError);
     expect(() => parsePrompt({ type: "chat", name: "x", messages: [{ role: "user", content: [] }] })).toThrow(PromptValidationError);
-    expect(() => parsePrompt({ type: "text", name: "x", text: [{ type: "text", text: "no parts on text prompts" }] })).toThrow(PromptValidationError);
+    expect(() => parsePrompt({ type: "text", name: "x", text: [{ type: "text", text: "no parts on text prompts" }] })).toThrow(
+      PromptValidationError,
+    );
   });
 
   it("goes to the model in the OpenAI format: inline files as data, anything else as a reference", () => {
@@ -326,25 +355,62 @@ describe("decisions: attachments", () => {
 
   it("run sends parts on the wire, and chat turns can carry attachments too", async () => {
     const bodies: any[] = [];
-    const gateway = { baseURL: "https://gw.test/v1", fetch: (async (_u: unknown, init?: RequestInit) => (bodies.push(JSON.parse(String(init!.body))), new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] })))) as typeof fetch };
-    const client = createClient({ platform: memory(), tracing: false, gateway, prompts: [vision, { type: "chat", name: "chatty", model: { id: "m" }, messages: [{ role: "system", content: "Hi" }] }] });
-    await client.run("vision/describe", { variables: { audience: "ops", question: "?", screenshot: png, report: "data:application/pdf;base64,AAAA", report_name: "q3" } });
+    const gateway = {
+      baseURL: "https://gw.test/v1",
+      fetch: (async (_u: unknown, init?: RequestInit) => (
+        bodies.push(JSON.parse(String(init!.body))),
+        new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] }))
+      )) as typeof fetch,
+    };
+    const client = createClient({
+      platform: memory(),
+      tracing: false,
+      gateway,
+      prompts: [vision, { type: "chat", name: "chatty", model: { id: "m" }, messages: [{ role: "system", content: "Hi" }] }],
+    });
+    await client.run("vision/describe", {
+      variables: { audience: "ops", question: "?", screenshot: png, report: "data:application/pdf;base64,AAAA", report_name: "q3" },
+    });
     expect(bodies[0].messages[1].content.map((p: any) => p.type)).toEqual(["text", "image_url", "image_url", "file"]);
-    expect(bodies[0].messages[1].content[3]).toEqual({ type: "file", file: { file_data: "data:application/pdf;base64,AAAA", filename: "q3.pdf", format: "application/pdf" } });
-    await client.chat("chatty").send([{ type: "text", text: "what is this?" }, { type: "image", url: png }]);
-    expect(bodies[1].messages[1]).toEqual({ role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image_url", image_url: { url: png } }] });
+    expect(bodies[0].messages[1].content[3]).toEqual({
+      type: "file",
+      file: { file_data: "data:application/pdf;base64,AAAA", filename: "q3.pdf", format: "application/pdf" },
+    });
+    await client.chat("chatty").send([
+      { type: "text", text: "what is this?" },
+      { type: "image", url: png },
+    ]);
+    expect(bodies[1].messages[1]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "what is this?" },
+        { type: "image_url", image_url: { url: png } },
+      ],
+    });
   });
 
   it("traces record a note instead of attachment bytes, unless asked for them", async () => {
     const spans: SpanRecord[] = [];
-    const tracing: PlatformAdapter = { id: "t", tracing: { url: "https://t.test", headers: {}, attributes: (s) => (spans.push(s), {}), fetch: (async () => new Response("{}")) as typeof fetch } };
+    const tracing: PlatformAdapter = {
+      id: "t",
+      tracing: {
+        url: "https://t.test",
+        headers: {},
+        attributes: (s) => (spans.push(s), {}),
+        fetch: (async () => new Response("{}")) as typeof fetch,
+      },
+    };
     const client = createClient({ platform: memory(), tracing: [tracing] });
     const input = { image: png, small: "data:text/plain;base64,aGk=", nested: [{ url: png }] };
     await client.trace("default", { input }, () => undefined);
     await client.trace("kept", { input, capture: { attachments: true } }, () => client.trace("child", { input: png }, () => undefined));
     await client.flush();
     const byName = (name: string) => spans.find((s) => s.name === name)!;
-    expect(byName("default").input).toEqual({ image: "[image/png attachment, 3 kB]", small: "data:text/plain;base64,aGk=", nested: [{ url: "[image/png attachment, 3 kB]" }] });
+    expect(byName("default").input).toEqual({
+      image: "[image/png attachment, 3 kB]",
+      small: "data:text/plain;base64,aGk=",
+      nested: [{ url: "[image/png attachment, 3 kB]" }],
+    });
     expect(byName("kept").input).toEqual(input);
     expect(byName("child").input).toBe(png); // the setting is inherited
     expect(input.image).toBe(png); // the application's own object is untouched
@@ -363,12 +429,16 @@ describe("decisions: attachments", () => {
     const reg = lf(fake);
     await reg.push(vision);
     const row = fake.store.get("vision/describe")![0] as any;
-    expect(row.prompt[1].content).toBe("Compare the screenshot with the report. {{question}}\n[image: {{screenshot}}]\n[image: https://example.com/reference.png]\n[file: {{report_name}}.pdf]");
+    expect(row.prompt[1].content).toBe(
+      "Compare the screenshot with the report. {{question}}\n[image: {{screenshot}}]\n[image: https://example.com/reference.png]\n[file: {{report_name}}.pdf]",
+    );
     expect(row.config.__tas.fields.messages).toEqual(vision.type === "chat" ? vision.messages : []);
     expect((await reg.get({ name: "vision/describe" }))!.definition).toEqual(vision);
     // Edited in the Langfuse UI: the text there is now the truth, and the attachments it never held are gone.
     row.prompt[1].content = "Rewritten in the UI {{question}}";
-    expect((await reg.get({ name: "vision/describe" }))!.definition).toMatchObject({ messages: [{ role: "system" }, { role: "user", content: "Rewritten in the UI {{question}}" }] });
+    expect((await reg.get({ name: "vision/describe" }))!.definition).toMatchObject({
+      messages: [{ role: "system" }, { role: "user", content: "Rewritten in the UI {{question}}" }],
+    });
   });
 
   it("LangSmith stores images natively and keeps files in metadata", async () => {
@@ -378,24 +448,55 @@ describe("decisions: attachments", () => {
     const manifest = fake.repos.get("vision--describe")!.commits[0]!.manifest;
     const user = manifest.kwargs.first.kwargs.messages[1].kwargs.prompt;
     expect(user.map((t: any) => t.id.at(-1))).toEqual(["PromptTemplate", "ImagePromptTemplate", "ImagePromptTemplate"]); // no template exists for the file
-    expect(user[1].kwargs).toEqual({ input_variables: ["screenshot"], template: { url: "{{screenshot}}", detail: "high" }, template_format: "mustache" });
+    expect(user[1].kwargs).toEqual({
+      input_variables: ["screenshot"],
+      template: { url: "{{screenshot}}", detail: "high" },
+      template_format: "mustache",
+    });
     expect((await reg.get({ name: "vision/describe" }))!.definition).toEqual(vision);
     // Edited in the LangSmith UI: what it shows is the truth, so the file part it never held is gone.
     user.pop();
     const edited = (await reg.get({ name: "vision/describe" }))!.definition as Extract<PromptDefinition, { type: "chat" }>;
-    expect(edited.messages[1]).toEqual({ role: "user", content: [{ type: "text", text: "Compare the screenshot with the report. {{question}}" }, { type: "image", url: "{{screenshot}}", detail: "high" }] });
+    expect(edited.messages[1]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "Compare the screenshot with the report. {{question}}" },
+        { type: "image", url: "{{screenshot}}", detail: "high" },
+      ],
+    });
   });
 
   it("an image-only prompt needs no metadata on LangSmith, and f-string image urls are converted", async () => {
     const fake = fakeLangSmith();
     const reg = ls(fake);
-    const images: PromptDefinition = { type: "chat", name: "p", messages: [{ role: "user", content: [{ type: "text", text: "see" }, { type: "image", url: "{{u}}" }] }] };
+    const images: PromptDefinition = {
+      type: "chat",
+      name: "p",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "see" },
+            { type: "image", url: "{{u}}" },
+          ],
+        },
+      ],
+    };
     await reg.push(images);
     const manifest = fake.repos.get("p")!.commits[0]!.manifest;
     expect(manifest.kwargs.metadata.__tas.fields.messages).toBeUndefined();
     manifest.kwargs.messages[0].kwargs.prompt[1].kwargs = { template: { url: "{u}" }, template_format: "f-string" };
     manifest.kwargs.messages[0].kwargs.prompt[0].kwargs = { template: "see {x}", template_format: "f-string" };
-    expect((await reg.get({ name: "p" }))!.definition).toMatchObject({ messages: [{ content: [{ type: "text", text: "see {{x}}" }, { type: "image", url: "{{u}}" }] }] });
+    expect((await reg.get({ name: "p" }))!.definition).toMatchObject({
+      messages: [
+        {
+          content: [
+            { type: "text", text: "see {{x}}" },
+            { type: "image", url: "{{u}}" },
+          ],
+        },
+      ],
+    });
   });
 
   it("turns local files into data: URIs for use as variables", async () => {
@@ -423,20 +524,47 @@ describe("decisions: Braintrust", () => {
   });
 
   it.each([
-    ["an audio part", { role: "user", content: [{ type: "input_audio", input_audio: { data: "…", format: "wav" } }] }, /part of type "input_audio" is not supported/],
+    [
+      "an audio part",
+      { role: "user", content: [{ type: "input_audio", input_audio: { data: "…", format: "wav" } }] },
+      /part of type "input_audio" is not supported/,
+    ],
     ["a tool-role message", { role: "tool", content: "result" }, /role "tool"/],
   ])("rejects a prompt with %s as not portable", async (_what, message, error) => {
     const fake = fakeBraintrust();
-    fake.versions.set("foreign", [{ id: "p1", _xact_id: "1", slug: "foreign", name: "foreign", prompt_data: { prompt: { type: "chat", messages: [message] } } }]);
+    fake.versions.set("foreign", [
+      { id: "p1", _xact_id: "1", slug: "foreign", name: "foreign", prompt_data: { prompt: { type: "chat", messages: [message] } } },
+    ]);
     await expect(bt(fake).get({ name: "foreign" })).rejects.toThrow(error);
   });
 
   it("reads images and files attached in the Braintrust UI", async () => {
     const fake = fakeBraintrust();
-    const content = [{ type: "text", text: "Look" }, { type: "image_url", image_url: { url: "{{shot}}" } }, { type: "file", file: { file_data: "data:application/pdf;base64,AAAA", filename: "a.pdf" } }];
-    fake.versions.set("foreign", [{ id: "p1", _xact_id: "1", slug: "foreign", name: "foreign", prompt_data: { prompt: { type: "chat", messages: [{ role: "user", content }] } } }]);
+    const content = [
+      { type: "text", text: "Look" },
+      { type: "image_url", image_url: { url: "{{shot}}" } },
+      { type: "file", file: { file_data: "data:application/pdf;base64,AAAA", filename: "a.pdf" } },
+    ];
+    fake.versions.set("foreign", [
+      {
+        id: "p1",
+        _xact_id: "1",
+        slug: "foreign",
+        name: "foreign",
+        prompt_data: { prompt: { type: "chat", messages: [{ role: "user", content }] } },
+      },
+    ]);
     expect((await bt(fake).get({ name: "foreign" }))!.definition).toMatchObject({
-      messages: [{ role: "user", content: [{ type: "text", text: "Look" }, { type: "image", url: "{{shot}}" }, { type: "file", url: "data:application/pdf;base64,AAAA", name: "a.pdf" }] }],
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Look" },
+            { type: "image", url: "{{shot}}" },
+            { type: "file", url: "data:application/pdf;base64,AAAA", name: "a.pdf" },
+          ],
+        },
+      ],
     });
   });
 });
@@ -483,7 +611,8 @@ describe("decisions: LangSmith", () => {
     fake.repos.get("p")!.commits.push({ id: "uuid-ui", commit_hash: "f".repeat(64), manifest });
     return reg;
   }
-  const fstring = (template: string) => lcNode(["langchain", "prompts", "prompt", "PromptTemplate"], { template, template_format: "f-string", input_variables: [] });
+  const fstring = (template: string) =>
+    lcNode(["langchain", "prompts", "prompt", "PromptTemplate"], { template, template_format: "f-string", input_variables: [] });
   const chatOf = (...messages: unknown[]) => lcNode(["langchain", "prompts", "chat", "ChatPromptTemplate"], { messages });
   const human = (prompt: unknown) => lcNode(["langchain", "prompts", "chat", "HumanMessagePromptTemplate"], { prompt });
 
@@ -510,8 +639,17 @@ describe("decisions: LangSmith", () => {
   });
 
   it("reads an Azure OpenAI model but has no way to write one", async () => {
-    const azure = lcNode(["langchain", "chat_models", "azure_openai", "AzureChatOpenAI"], { deployment_name: "gpt-4o", azure_endpoint: "https://example.invalid/", temperature: 0 });
-    const reg = await foreign(lcNode(["langchain", "schema", "runnable", "RunnableSequence"], { first: chatOf(human(fstring("hi"))), last: lcNode(["langchain", "schema", "runnable", "RunnableBinding"], { bound: azure, kwargs: {} }) }));
+    const azure = lcNode(["langchain", "chat_models", "azure_openai", "AzureChatOpenAI"], {
+      deployment_name: "gpt-4o",
+      azure_endpoint: "https://example.invalid/",
+      temperature: 0,
+    });
+    const reg = await foreign(
+      lcNode(["langchain", "schema", "runnable", "RunnableSequence"], {
+        first: chatOf(human(fstring("hi"))),
+        last: lcNode(["langchain", "schema", "runnable", "RunnableBinding"], { bound: azure, kwargs: {} }),
+      }),
+    );
     expect((await reg.get({ name: "p" }))!.definition.model).toEqual({ id: "gpt-4o", params: { temperature: 0 } });
     expect(Object.keys(LANGSMITH_PROVIDERS)).not.toContain("azure");
   });
@@ -525,9 +663,21 @@ describe("decisions: LangSmith", () => {
   });
 
   it.each([
-    ["a message part LangChain has no template for here", () => chatOf(human([fstring("hi"), { type: "image_url" }])), /a part of type "image_url"/],
-    ["an unknown message type", () => chatOf(lcNode(["langchain", "prompts", "chat", "ToolMessagePromptTemplate"], { prompt: fstring("x") })), /message type "ToolMessagePromptTemplate"/],
-    ["an object that is not a prompt", () => lcNode(["langchain", "schema", "runnable", "RunnableLambda"], {}), /unsupported object "RunnableLambda"/],
+    [
+      "a message part LangChain has no template for here",
+      () => chatOf(human([fstring("hi"), { type: "image_url" }])),
+      /a part of type "image_url"/,
+    ],
+    [
+      "an unknown message type",
+      () => chatOf(lcNode(["langchain", "prompts", "chat", "ToolMessagePromptTemplate"], { prompt: fstring("x") })),
+      /message type "ToolMessagePromptTemplate"/,
+    ],
+    [
+      "an object that is not a prompt",
+      () => lcNode(["langchain", "schema", "runnable", "RunnableLambda"], {}),
+      /unsupported object "RunnableLambda"/,
+    ],
   ])("rejects %s as not portable", async (_what, manifest, error) => {
     const reg = await foreign(manifest());
     await expect(reg.get({ name: "p" })).rejects.toThrow(error);

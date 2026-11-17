@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { PlatformAdapter } from "./adapter.ts";
-import { itemId, type Dataset, type DatasetItem } from "./dataset.ts";
+import { type Dataset, type DatasetItem, itemId } from "./dataset.ts";
 import type { RunOptions, RunResult } from "./run.ts";
 import type { SpanHandle, TraceOptions } from "./trace.ts";
 
@@ -21,19 +21,27 @@ export interface ScorerArgs<Input = unknown, Output = unknown, Expected = unknow
  * Return null or undefined to say "does not apply to this item".
  */
 export type ScoreValue = number | boolean | null | undefined | { score: number | boolean; comment?: string };
-export type Scorer<Input = any, Output = any, Expected = any> = (args: ScorerArgs<Input, Output, Expected>) => ScoreValue | Promise<ScoreValue>;
+export type Scorer<Input = any, Output = any, Expected = any> = (
+  args: ScorerArgs<Input, Output, Expected>,
+) => ScoreValue | Promise<ScoreValue>;
 
 /** 1 when the output deep-equals the expected value. */
 export const exactMatch: Scorer = ({ output, expected }) => isDeepStrictEqual(output, expected);
 
 /** 1 when the output, as text, contains the expected value (or the given text). Case-insensitive. */
-export const includes = (text?: string): Scorer => ({ output, expected }) => {
-  const needle = text ?? (typeof expected === "string" ? expected : JSON.stringify(expected));
-  const haystack = typeof output === "string" ? output : JSON.stringify(output);
-  return needle === undefined ? null : (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
-};
+export const includes =
+  (text?: string): Scorer =>
+  ({ output, expected }) => {
+    const needle = text ?? (typeof expected === "string" ? expected : JSON.stringify(expected));
+    const haystack = typeof output === "string" ? output : JSON.stringify(output);
+    return needle === undefined ? null : (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
+  };
 
-const JUDGE_SCHEMA = { type: "object", properties: { score: { type: "number", minimum: 0, maximum: 1 }, reason: { type: "string" } }, required: ["score"] };
+const JUDGE_SCHEMA = {
+  type: "object",
+  properties: { score: { type: "number", minimum: 0, maximum: 1 }, reason: { type: "string" } },
+  required: ["score"],
+};
 const asVariable = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value ?? null));
 
 /**
@@ -41,9 +49,17 @@ const asVariable = (value: unknown) => (typeof value === "string" ? value : JSON
  * and expects JSON `{ "score": 0..1, "reason": "..." }` back. The judge prompt is an ordinary
  * prompt, so it is versioned, synced and traced like any other.
  */
-export function judge(client: { run(name: any, options?: any): Promise<RunResult<any>> }, prompt: string, options: Omit<RunOptions, "output" | "variables"> = {}): Scorer {
+export function judge(
+  client: { run(name: any, options?: any): Promise<RunResult<any>> },
+  prompt: string,
+  options: Omit<RunOptions, "output" | "variables"> = {},
+): Scorer {
   return async ({ input, output, expected }) => {
-    const result = await client.run(prompt, { ...options, variables: { input: asVariable(input), output: asVariable(output), expected: asVariable(expected) }, output: JUDGE_SCHEMA });
+    const result = await client.run(prompt, {
+      ...options,
+      variables: { input: asVariable(input), output: asVariable(output), expected: asVariable(expected) },
+      output: JUDGE_SCHEMA,
+    });
     const verdict = result.output as { score: number; reason?: string };
     return { score: verdict.score, ...(verdict.reason ? { comment: verdict.reason } : {}) };
   };
@@ -111,7 +127,9 @@ export interface EvalDefinition<Input = any, Output = any, Expected = any> exten
   name: string;
 }
 /** Identity helper for `*.eval.ts` files run by `tas eval`. */
-export function defineEval<Input, Output, Expected>(definition: EvalDefinition<Input, Output, Expected>): EvalDefinition<Input, Output, Expected> {
+export function defineEval<Input, Output, Expected>(
+  definition: EvalDefinition<Input, Output, Expected>,
+): EvalDefinition<Input, Output, Expected> {
   return definition;
 }
 
@@ -126,7 +144,10 @@ export async function evaluate(host: EvalHost, name: string, options: EvaluateOp
   const dataset: Dataset = Array.isArray(options.data) ? { name, items: options.data } : options.data;
   const items = dataset.items.map((item) => ({ ...item, id: itemId(item) }));
   const duplicate = items.find((item, i) => items.findIndex((other) => other.id === item.id) !== i);
-  if (duplicate) throw new Error(`dataset "${dataset.name}": two items share the id "${duplicate.id}" (ids default to a hash of the input; give them explicit ids)`);
+  if (duplicate)
+    throw new Error(
+      `dataset "${dataset.name}": two items share the id "${duplicate.id}" (ids default to a hash of the input; give them explicit ids)`,
+    );
 
   const startTime = Date.now();
   const runName = `${name}-${startTime.toString(36)}`;
@@ -146,7 +167,11 @@ export async function evaluate(host: EvalHost, name: string, options: EvaluateOp
     rows[index] = row;
     try {
       // Each item is its own trace, tagged so eval traffic can be told apart from real traffic.
-      row.output = await host.trace(`eval ${name}`, { input: item.input, tags: ["eval"], metadata: { experiment: runName, item: item.id } }, () => options.task(item.input, item));
+      row.output = await host.trace(
+        `eval ${name}`,
+        { input: item.input, tags: ["eval"], metadata: { experiment: runName, item: item.id } },
+        () => options.task(item.input, item),
+      );
     } catch (error) {
       row.error = message(error); // one bad item does not stop the run
     }
@@ -158,7 +183,8 @@ export async function evaluate(host: EvalHost, name: string, options: EvaluateOp
         if (raw === null || raw === undefined) continue;
         const { score, comment } = typeof raw === "object" ? raw : { score: raw, comment: undefined };
         const value = typeof score === "boolean" ? Number(score) : score;
-        if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new Error(`returned ${JSON.stringify(score)}; a score must be between 0 and 1`);
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1)
+          throw new Error(`returned ${JSON.stringify(score)}; a score must be between 0 and 1`);
         row.scores[scorerName] = { score: value, ...(comment ? { comment } : {}) };
       } catch (error) {
         (row.scorerErrors ??= {})[scorerName] = message(error);

@@ -1,13 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { TasConfig } from "./config.ts";
-import { evaluate, type EvaluateOptions, type ExperimentResult } from "./eval.ts";
+import { type EvaluateOptions, type ExperimentResult, evaluate } from "./eval.ts";
 import { createMasker, type Masker } from "./masking.ts";
-import { hashPrompt, parsePrompt, type PromptDefinition, type ResolvedPrompt } from "./prompt/model.ts";
-import { renderPrompt, type RenderedMessage, type RenderInput } from "./prompt/template.ts";
+import { hashPrompt, type PromptDefinition, parsePrompt, type ResolvedPrompt } from "./prompt/model.ts";
+import { type RenderedMessage, type RenderInput, renderPrompt } from "./prompt/template.ts";
 import type { PromptInputs, PromptMap, PromptShapes } from "./prompt/types.ts";
-import { chat, run, stream, type ChatSession, type RunOptions, type RunResult, type RunStream } from "./run.ts";
+import { type ChatSession, chat, type RunOptions, type RunResult, type RunStream, run, stream } from "./run.ts";
 import type { InferSchema, SchemaInput } from "./schema.ts";
-import { Tracer, type SpanHandle, type TraceExporter, type TraceOptions } from "./trace.ts";
+import { type SpanHandle, type TraceExporter, type TraceOptions, Tracer } from "./trace.ts";
 
 export class PromptNotFoundError extends Error {}
 export class PromptArchivedError extends Error {}
@@ -22,7 +22,10 @@ export interface GetPromptOptions {
 /** Names of prompts that need no variables or placeholders, so their options argument may be omitted. */
 type NoInputNames<P extends PromptShapes<P>> = { [K in keyof P & string]: {} extends PromptInputs<P[K]> ? K : never }[keyof P & string];
 type RenderOptions<P extends PromptShapes<P>, N extends keyof P> = Omit<RenderInput, "variables" | "placeholders"> & PromptInputs<P[N]>;
-type RunOptionsOf<P extends PromptShapes<P>, N extends keyof P, S extends SchemaInput | undefined> = Omit<RunOptions<S>, "variables" | "placeholders"> &
+type RunOptionsOf<P extends PromptShapes<P>, N extends keyof P, S extends SchemaInput | undefined> = Omit<
+  RunOptions<S>,
+  "variables" | "placeholders"
+> &
   PromptInputs<P[N]> &
   GetPromptOptions;
 type RunOutput<P extends PromptShapes<P>, N extends keyof P, S> = RunResult<S extends SchemaInput ? InferSchema<S> : P[N]["output"]>;
@@ -37,21 +40,41 @@ export interface TasClient<P extends PromptShapes<P> = PromptMap> {
   readonly mask: Masker;
   readonly prompts: {
     get(name: keyof P & string, options?: GetPromptOptions): Promise<ResolvedPrompt>;
-    render<N extends NoInputNames<P>>(name: N, input?: RenderOptions<P, N>, options?: GetPromptOptions): Promise<{ messages: RenderedMessage[]; prompt: ResolvedPrompt }>;
-    render<N extends keyof P & string>(name: N, input: RenderOptions<P, N>, options?: GetPromptOptions): Promise<{ messages: RenderedMessage[]; prompt: ResolvedPrompt }>;
+    render<N extends NoInputNames<P>>(
+      name: N,
+      input?: RenderOptions<P, N>,
+      options?: GetPromptOptions,
+    ): Promise<{ messages: RenderedMessage[]; prompt: ResolvedPrompt }>;
+    render<N extends keyof P & string>(
+      name: N,
+      input: RenderOptions<P, N>,
+      options?: GetPromptOptions,
+    ): Promise<{ messages: RenderedMessage[]; prompt: ResolvedPrompt }>;
   };
   /**
    * Fetch a prompt, render it and call the configured gateway with the prompt's model, settings,
    * tools and output schema. Pass functions in `tools` to have tool calls executed and looped.
    */
-  run<N extends NoInputNames<P>, S extends SchemaInput | undefined = undefined>(name: N, options?: RunOptionsOf<P, N, S>): Promise<RunOutput<P, N, S>>;
-  run<N extends keyof P & string, S extends SchemaInput | undefined = undefined>(name: N, options: RunOptionsOf<P, N, S>): Promise<RunOutput<P, N, S>>;
+  run<N extends NoInputNames<P>, S extends SchemaInput | undefined = undefined>(
+    name: N,
+    options?: RunOptionsOf<P, N, S>,
+  ): Promise<RunOutput<P, N, S>>;
+  run<N extends keyof P & string, S extends SchemaInput | undefined = undefined>(
+    name: N,
+    options: RunOptionsOf<P, N, S>,
+  ): Promise<RunOutput<P, N, S>>;
   /**
    * As `run`, but streamed: iterate the returned value for text and tool events as they happen,
    * and await its `result` for the same value `run` returns.
    */
-  stream<N extends NoInputNames<P>, S extends SchemaInput | undefined = undefined>(name: N, options?: RunOptionsOf<P, N, S>): RunStream<RunOutput<P, N, S>["output"]>;
-  stream<N extends keyof P & string, S extends SchemaInput | undefined = undefined>(name: N, options: RunOptionsOf<P, N, S>): RunStream<RunOutput<P, N, S>["output"]>;
+  stream<N extends NoInputNames<P>, S extends SchemaInput | undefined = undefined>(
+    name: N,
+    options?: RunOptionsOf<P, N, S>,
+  ): RunStream<RunOutput<P, N, S>["output"]>;
+  stream<N extends keyof P & string, S extends SchemaInput | undefined = undefined>(
+    name: N,
+    options: RunOptionsOf<P, N, S>,
+  ): RunStream<RunOutput<P, N, S>["output"]>;
   /** Start a multi-turn conversation from a prompt. */
   chat<N extends NoInputNames<P>>(name: N, options?: RunOptionsOf<P, N, undefined>): ChatSession;
   chat<N extends keyof P & string>(name: N, options: RunOptionsOf<P, N, undefined>): ChatSession;
@@ -65,7 +88,10 @@ export interface TasClient<P extends PromptShapes<P> = PromptMap> {
    * Run `task` over a dataset, score each output, and report the run as an experiment to the
    * platform. The results are returned whether or not reporting succeeds.
    */
-  evaluate<Input = any, Output = any, Expected = any>(name: string, options: EvaluateOptions<Input, Output, Expected>): Promise<ExperimentResult>;
+  evaluate<Input = any, Output = any, Expected = any>(
+    name: string,
+    options: EvaluateOptions<Input, Output, Expected>,
+  ): Promise<ExperimentResult>;
   /** Send any spans still waiting. Call before a short-lived process (script, serverless handler) exits. */
   flush(): Promise<void>;
   /** Flush and release anything this client holds. Called by the pool on eviction. */
@@ -109,9 +135,7 @@ function createUntypedClient(config: TasConfig): TasClient {
   /** Returns undefined when the platform has no such prompt; throws when the platform is unreachable. */
   const fromRemote = async (name: string, options: GetPromptOptions): Promise<ResolvedPrompt | undefined> => {
     if (!registry) return undefined;
-    const ref = options.version
-      ? { name, version: options.version }
-      : { name, label: options.label ?? defaultLabel };
+    const ref = options.version ? { name, version: options.version } : { name, label: options.label ?? defaultLabel };
     const key = JSON.stringify(ref);
     const hit = cache.get(key);
     if (hit && Date.now() - hit.at < ttl) return hit.value;
@@ -149,7 +173,9 @@ function createUntypedClient(config: TasConfig): TasClient {
     }
     if (!found) throw new PromptNotFoundError(`prompt "${name}" not found (canonical: ${canonical})`);
     if (found.definition.archived && !options.allowArchived) {
-      throw new PromptArchivedError(`prompt "${name}" is archived. Remove \`archived: true\` to restore it, or pass { allowArchived: true }.`);
+      throw new PromptArchivedError(
+        `prompt "${name}" is archived. Remove \`archived: true\` to restore it, or pass { allowArchived: true }.`,
+      );
     }
     return found;
   };
@@ -173,7 +199,11 @@ function createUntypedClient(config: TasConfig): TasClient {
     chat(name: string, options: RunOptions & GetPromptOptions = {}) {
       return chat(config.gateway, () => get(name, options), options, tracer);
     },
-    trace<T>(name: string, optionsOrFn: TraceOptions | ((span: SpanHandle) => T | Promise<T>), maybeFn?: (span: SpanHandle) => T | Promise<T>) {
+    trace<T>(
+      name: string,
+      optionsOrFn: TraceOptions | ((span: SpanHandle) => T | Promise<T>),
+      maybeFn?: (span: SpanHandle) => T | Promise<T>,
+    ) {
       const [options, fn] = typeof optionsOrFn === "function" ? [{}, optionsOrFn] : [optionsOrFn, maybeFn!];
       return tracer.span(name, options, fn);
     },

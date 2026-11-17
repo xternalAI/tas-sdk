@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { USAGE } from "../src/cli.ts";
-import { loadDataset, writeDataset, writePrompt, type PromptDefinition } from "../src/index.ts";
+import { loadDataset, type PromptDefinition, writeDataset, writePrompt } from "../src/index.ts";
 import { cli, SDK } from "./cli.ts";
 
 let dir: string;
@@ -16,7 +16,8 @@ beforeEach(async () => {
 afterEach(() => rm(dir, { recursive: true, force: true }));
 
 const run = (...args: string[]) => cli(args, dir);
-const config = (body: string, file = "tas.config.ts") => writeFile(join(dir, file), `import * as tas from ${SDK};\nconst { defineConfig, memory } = tas;\n${body}\n`);
+const config = (body: string, file = "tas.config.ts") =>
+  writeFile(join(dir, file), `import * as tas from ${SDK};\nconst { defineConfig, memory } = tas;\n${body}\n`);
 const greet: PromptDefinition = { type: "text", name: "greet", text: "Hi {{name}}" };
 
 describe("dispatch", () => {
@@ -38,14 +39,19 @@ describe("dispatch", () => {
     await config("export default defineConfig({ platform: memory() });");
     const { stdout } = await promisify(execFile)(process.execPath, [resolve("src/bin.ts"), "prompts", "status"], { cwd: dir });
     expect(stdout).toBe("no prompts\n");
-    const failed = await promisify(execFile)(process.execPath, [resolve("src/bin.ts"), "bogus"], { cwd: dir }).catch((error: { code: number }) => error);
+    const failed = await promisify(execFile)(process.execPath, [resolve("src/bin.ts"), "bogus"], { cwd: dir }).catch(
+      (error: { code: number }) => error,
+    );
     expect((failed as { code: number }).code).toBe(2);
   });
 });
 
 describe("configuration", () => {
   it("explains a missing config, a config with no default export, and a bad profile", async () => {
-    expect(await run("prompts", "status")).toEqual({ code: 1, out: "tas: no config found (looked for tas.config.ts, tas.config.mts, tas.config.js, tas.config.mjs)\n" });
+    expect(await run("prompts", "status")).toEqual({
+      code: 1,
+      out: "tas: no config found (looked for tas.config.ts, tas.config.mts, tas.config.js, tas.config.mjs)\n",
+    });
     expect((await run("prompts", "status", "--config", "nope.ts")).out).toBe("tas: no config found (looked for nope.ts)\n");
     await config("export const notDefault = 1;", "empty.config.ts");
     expect((await run("prompts", "status", "--config", "empty.config.ts")).out).toMatch(/has no default export/);
@@ -93,8 +99,11 @@ describe("prompts", () => {
       code: 1,
       out: "unchanged  greet  @1\nrefused    loopy  (non-portable template syntax; use --force)\n           not portable: {{#a}}  {{/a}}\n",
     });
-    expect((await run("prompts", "push", "--force")).out).toMatch(/pushed     loopy  @1\n           not portable/);
-    expect(await run("prompts", "pull")).toEqual({ code: 0, out: "unchanged  greet  @1\nunchanged  loopy  @1\n           not portable: {{#a}}  {{/a}}\n" });
+    expect((await run("prompts", "push", "--force")).out).toMatch(/pushed {5}loopy {2}@1\n {11}not portable/);
+    expect(await run("prompts", "pull")).toEqual({
+      code: 0,
+      out: "unchanged  greet  @1\nunchanged  loopy  @1\n           not portable: {{#a}}  {{/a}}\n",
+    });
   });
 });
 
@@ -107,9 +116,17 @@ describe("datasets", () => {
       export default defineConfig({ platform });`);
     await writeDataset(join(dir, "datasets"), { name: "qa", items: [{ id: "local", input: 0 }] });
     expect((await run("datasets", "list")).out).toBe("qa\nsmoke\n");
-    expect((await run("datasets", "pull")).out).toBe("pulled     qa  2 items  (1 new, 0 changed, 1 only in the file)\npulled     smoke  1 items  (1 new, 0 changed, 0 only in the file)\n");
-    expect((await loadDataset(join(dir, "datasets", "qa.dataset.jsonl"))).items).toEqual([{ id: "local", input: 0 }, { id: "a", input: 1, expected: 2 }]);
-    expect(await run("datasets", "pull", "smoke")).toEqual({ code: 0, out: "pulled     smoke  1 items  (0 new, 0 changed, 0 only in the file)\n" });
+    expect((await run("datasets", "pull")).out).toBe(
+      "pulled     qa  2 items  (1 new, 0 changed, 1 only in the file)\npulled     smoke  1 items  (1 new, 0 changed, 0 only in the file)\n",
+    );
+    expect((await loadDataset(join(dir, "datasets", "qa.dataset.jsonl"))).items).toEqual([
+      { id: "local", input: 0 },
+      { id: "a", input: 1, expected: 2 },
+    ]);
+    expect(await run("datasets", "pull", "smoke")).toEqual({
+      code: 0,
+      out: "pulled     smoke  1 items  (0 new, 0 changed, 0 only in the file)\n",
+    });
     expect(await run("datasets", "push", "qa")).toEqual({ code: 0, out: "pushed     qa  2 items\n" });
   });
 });
@@ -129,9 +146,14 @@ describe("eval", () => {
     );
     const result = await run("eval", "one.eval.ts");
     expect(result.code).toBe(0);
-    expect(result.out).toMatch(/^pass  single  2 items  \(no scores\)  1 errored\n      reporter: https:\/\/r\.test\/exp\n      down: not reported \(no route\)\n      quiet: reported as single-[0-9a-z]+\n$/);
+    expect(result.out).toMatch(
+      /^pass {2}single {2}2 items {2}\(no scores\) {2}1 errored\n {6}reporter: https:\/\/r\.test\/exp\n {6}down: not reported \(no route\)\n {6}quiet: reported as single-[0-9a-z]+\n$/,
+    );
 
     await writeFile(join(dir, "bad.eval.ts"), "export default { nothing: true };\n");
-    expect(await run("eval", "bad.eval.ts")).toEqual({ code: 1, out: "tas: bad.eval.ts: default export must be defineEval({...}), an array of them, or a function returning either\n" });
+    expect(await run("eval", "bad.eval.ts")).toEqual({
+      code: 1,
+      out: "tas: bad.eval.ts: default export must be defineEval({...}), an array of them, or a function returning either\n",
+    });
   });
 });

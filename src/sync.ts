@@ -102,7 +102,7 @@ async function writeLock(dir: string, lock: Lock): Promise<void> {
   for (const target of Object.values(lock.targets)) {
     target.prompts = Object.fromEntries(Object.entries(target.prompts).sort(([a], [b]) => (a < b ? -1 : 1)));
   }
-  await writeFile(join(dir, LOCKFILE), JSON.stringify(lock, null, 2) + "\n");
+  await writeFile(join(dir, LOCKFILE), `${JSON.stringify(lock, null, 2)}\n`);
 }
 
 function classify(local: string | undefined, remote: string | undefined, locked: string | undefined): SyncState {

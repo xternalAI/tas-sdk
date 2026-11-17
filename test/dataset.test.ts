@@ -7,7 +7,20 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { braintrust, datasetPath, itemId, langfuse, langsmith, loadDataset, memory, pullDataset, pushDataset, stringifyDataset, writeDataset, type DatasetStore } from "../src/index.ts";
+import {
+  braintrust,
+  type DatasetStore,
+  datasetPath,
+  itemId,
+  langfuse,
+  langsmith,
+  loadDataset,
+  memory,
+  pullDataset,
+  pushDataset,
+  stringifyDataset,
+  writeDataset,
+} from "../src/index.ts";
 import { cli, SDK } from "./cli.ts";
 import { datasetConformance, datasetItems } from "./conformance.ts";
 
@@ -19,10 +32,16 @@ afterEach(() => rm(dir, { recursive: true, force: true }));
 
 describe("dataset files", () => {
   it("writes one item per line with keys in a fixed order, and reads them back", async () => {
-    const path = await writeDataset(dir, { name: "team/qa", items: [{ metadata: { a: 1 }, expected: "x", input: { q: 1 }, id: "one" }, { input: "bare" }] });
+    const path = await writeDataset(dir, {
+      name: "team/qa",
+      items: [{ metadata: { a: 1 }, expected: "x", input: { q: 1 }, id: "one" }, { input: "bare" }],
+    });
     expect(path).toBe(datasetPath(dir, "team/qa"));
     expect(await readFile(path, "utf8")).toBe('{"id":"one","input":{"q":1},"expected":"x","metadata":{"a":1}}\n{"input":"bare"}\n');
-    expect(await loadDataset(path)).toEqual({ name: "qa", items: [{ id: "one", input: { q: 1 }, expected: "x", metadata: { a: 1 } }, { input: "bare" }] });
+    expect(await loadDataset(path)).toEqual({
+      name: "qa",
+      items: [{ id: "one", input: { q: 1 }, expected: "x", metadata: { a: 1 } }, { input: "bare" }],
+    });
     expect(stringifyDataset({ name: "empty", items: [] })).toBe("");
   });
 
@@ -45,7 +64,10 @@ describe("pull and push", () => {
   it("push sends the file, filling in hashed ids, and refuses duplicates", async () => {
     await writeDataset(dir, { name: "qa", items: [{ id: "a", input: 1 }, { input: { q: "no id" } }] });
     expect(await pushDataset(dir, store, "qa")).toEqual({ name: "qa", action: "pushed", items: 2 });
-    expect((await store.pull("qa"))!.items).toEqual([{ id: "a", input: 1 }, { id: itemId({ input: { q: "no id" } }), input: { q: "no id" } }]);
+    expect((await store.pull("qa"))!.items).toEqual([
+      { id: "a", input: 1 },
+      { id: itemId({ input: { q: "no id" } }), input: { q: "no id" } },
+    ]);
     await writeDataset(dir, { name: "dup", items: [{ input: "same" }, { input: "same" }] });
     await expect(pushDataset(dir, store, "dup")).rejects.toThrow(/two items share the id/);
   });
@@ -58,10 +80,29 @@ describe("pull and push", () => {
   });
 
   it("on pull the platform's version wins, the file keeps its order, new rows are appended, local rows are kept", async () => {
-    await writeDataset(dir, { name: "qa", items: [{ id: "local-only", input: "mine" }, { id: "b", input: 2, expected: "old" }, { id: "a", input: 1 }] });
-    await store.push({ name: "qa", items: [{ id: "a", input: 1 }, { id: "b", input: 2, expected: "edited in the UI" }, { id: "new", input: 3 }] });
+    await writeDataset(dir, {
+      name: "qa",
+      items: [
+        { id: "local-only", input: "mine" },
+        { id: "b", input: 2, expected: "old" },
+        { id: "a", input: 1 },
+      ],
+    });
+    await store.push({
+      name: "qa",
+      items: [
+        { id: "a", input: 1 },
+        { id: "b", input: 2, expected: "edited in the UI" },
+        { id: "new", input: 3 },
+      ],
+    });
     expect(await pullDataset(dir, store, "qa")).toEqual({ name: "qa", action: "pulled", items: 4, added: 1, updated: 1, localOnly: 1 });
-    expect(await fileItems()).toEqual([{ id: "local-only", input: "mine" }, { id: "b", input: 2, expected: "edited in the UI" }, { id: "a", input: 1 }, { id: "new", input: 3 }]);
+    expect(await fileItems()).toEqual([
+      { id: "local-only", input: "mine" },
+      { id: "b", input: 2, expected: "edited in the UI" },
+      { id: "a", input: 1 },
+      { id: "new", input: 3 },
+    ]);
   });
 
   it("an id that is just the input's hash stays out of the file across a push and pull", async () => {
@@ -73,7 +114,13 @@ describe("pull and push", () => {
   });
 
   it("push never deletes on the platform: a row removed from the file stays there", async () => {
-    await writeDataset(dir, { name: "qa", items: [{ id: "a", input: 1 }, { id: "b", input: 2 }] });
+    await writeDataset(dir, {
+      name: "qa",
+      items: [
+        { id: "a", input: 1 },
+        { id: "b", input: 2 },
+      ],
+    });
     await pushDataset(dir, store, "qa");
     await writeDataset(dir, { name: "qa", items: [{ id: "a", input: 1 }] });
     await pushDataset(dir, store, "qa");
@@ -86,7 +133,9 @@ describe("how each platform's rows are read", () => {
     (async (url: URL | RequestInfo, init?: RequestInit) => {
       const u = new URL(String(url));
       const reply = routes(u.pathname + u.search, init?.method ?? "GET", init?.body ? JSON.parse(String(init.body)) : undefined);
-      return reply === undefined ? new Response(JSON.stringify({ message: "not found" }), { status: 404 }) : new Response(JSON.stringify(reply));
+      return reply === undefined
+        ? new Response(JSON.stringify({ message: "not found" }), { status: 404 })
+        : new Response(JSON.stringify(reply));
     }) as typeof fetch;
 
   it("Braintrust: oldest first, nulls dropped, pages followed", async () => {
@@ -94,8 +143,25 @@ describe("how each platform's rows are read", () => {
       { events: [{ id: "b", input: 2, expected: null, metadata: null, created: "2026-01-02" }], cursor: "next" },
       { events: [{ id: "a", input: "one", expected: 1, metadata: { k: 1 }, created: "2026-01-01" }], cursor: null },
     ];
-    const store = braintrust({ apiKey: "k", projectId: "p", fetch: answering((path) => (path.startsWith("/v1/dataset?") ? { objects: path.includes("dataset_name=qa") ? [{ id: "ds", description: "QA set" }] : [] } : path.endsWith("/fetch") ? pages.shift() : {})) }).datasets!;
-    expect(await store.pull("qa")).toEqual({ name: "qa", description: "QA set", items: [{ id: "a", input: "one", expected: 1, metadata: { k: 1 } }, { id: "b", input: 2 }] });
+    const store = braintrust({
+      apiKey: "k",
+      projectId: "p",
+      fetch: answering((path) =>
+        path.startsWith("/v1/dataset?")
+          ? { objects: path.includes("dataset_name=qa") ? [{ id: "ds", description: "QA set" }] : [] }
+          : path.endsWith("/fetch")
+            ? pages.shift()
+            : {},
+      ),
+    }).datasets!;
+    expect(await store.pull("qa")).toEqual({
+      name: "qa",
+      description: "QA set",
+      items: [
+        { id: "a", input: "one", expected: 1, metadata: { k: 1 } },
+        { id: "b", input: 2 },
+      ],
+    });
     expect(await store.pull("other")).toBeNull();
   });
 
@@ -105,18 +171,57 @@ describe("how each platform's rows are read", () => {
       { id: "made-in-ui", input: { q: 2 }, expectedOutput: null, metadata: { k: 1 }, status: "ACTIVE", createdAt: "2026-01-02" },
       { id: "qa--gone", input: 3, status: "ARCHIVED", createdAt: "2026-01-03" },
     ];
-    const store = langfuse({ publicKey: "pk", secretKey: "sk", fetch: answering((path) => (path.includes("/v2/datasets/qa") ? { description: null } : path.includes("/dataset-items") ? { data: rows, meta: { totalPages: 1 } } : undefined)) }).datasets!;
-    expect(await store.pull("qa")).toEqual({ name: "qa", items: [{ id: "a", input: "one", expected: 1 }, { id: "made-in-ui", input: { q: 2 }, metadata: { k: 1 } }] });
+    const store = langfuse({
+      publicKey: "pk",
+      secretKey: "sk",
+      fetch: answering((path) =>
+        path.includes("/v2/datasets/qa")
+          ? { description: null }
+          : path.includes("/dataset-items")
+            ? { data: rows, meta: { totalPages: 1 } }
+            : undefined,
+      ),
+    }).datasets!;
+    expect(await store.pull("qa")).toEqual({
+      name: "qa",
+      items: [
+        { id: "a", input: "one", expected: 1 },
+        { id: "made-in-ui", input: { q: 2 }, metadata: { k: 1 } },
+      ],
+    });
     expect(await store.pull("missing")).toBeNull();
   });
 
   it("LangSmith: wrapped values are unwrapped, our bookkeeping and LangSmith's own are removed from metadata", async () => {
     const examples = [
-      { id: "uuid-1", inputs: { input: "bare" }, outputs: { output: 4 }, metadata: { k: 1, __tas: { id: "a", wrapped: ["input", "output"] }, dataset_split: ["base"] }, created_at: "2026-01-01" },
-      { id: "uuid-2", inputs: { input: "really an object with this key" }, outputs: null, metadata: { __tas: { id: "b" } }, created_at: "2026-01-02" },
+      {
+        id: "uuid-1",
+        inputs: { input: "bare" },
+        outputs: { output: 4 },
+        metadata: { k: 1, __tas: { id: "a", wrapped: ["input", "output"] }, dataset_split: ["base"] },
+        created_at: "2026-01-01",
+      },
+      {
+        id: "uuid-2",
+        inputs: { input: "really an object with this key" },
+        outputs: null,
+        metadata: { __tas: { id: "b" } },
+        created_at: "2026-01-02",
+      },
       { id: "uuid-3", inputs: { q: "made in the UI" }, outputs: { a: 1 }, metadata: null, created_at: "2026-01-03" },
     ];
-    const store = langsmith({ apiKey: "k", fetch: answering((path) => (path.includes("/datasets?name=qa") ? [{ id: "ds", name: "qa", description: "QA" }] : path.includes("/datasets?name=") ? [] : path.includes("/examples?") ? examples : {})) }).datasets!;
+    const store = langsmith({
+      apiKey: "k",
+      fetch: answering((path) =>
+        path.includes("/datasets?name=qa")
+          ? [{ id: "ds", name: "qa", description: "QA" }]
+          : path.includes("/datasets?name=")
+            ? []
+            : path.includes("/examples?")
+              ? examples
+              : {},
+      ),
+    }).datasets!;
     expect(await store.pull("qa")).toEqual({
       name: "qa",
       description: "QA",
@@ -140,7 +245,14 @@ describe("listing datasets on each platform", () => {
   });
 
   it("Langfuse follows pages until the last", async () => {
-    const store = langfuse({ publicKey: "pk", secretKey: "sk", fetch: paged([{ data: names(0, 2), meta: { totalPages: 2 } }, { data: names(2, 1), meta: { totalPages: 2 } }]) }).datasets!;
+    const store = langfuse({
+      publicKey: "pk",
+      secretKey: "sk",
+      fetch: paged([
+        { data: names(0, 2), meta: { totalPages: 2 } },
+        { data: names(2, 1), meta: { totalPages: 2 } },
+      ]),
+    }).datasets!;
     expect(await store.list()).toEqual(["d0", "d1", "d2"]);
   });
 
@@ -154,7 +266,10 @@ describe("tas datasets", () => {
   const run = (args: string[]) => cli(args, dir);
 
   it("lists, pushes every dataset file, and reports a dataset the platform does not have", async () => {
-    await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory(), datasetsDir: "d" });\n`);
+    await writeFile(
+      join(dir, "tas.config.ts"),
+      `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory(), datasetsDir: "d" });\n`,
+    );
     expect(await run(["datasets", "list"])).toEqual({ code: 0, out: "no datasets\n" });
     expect(await run(["datasets", "push"])).toEqual({ code: 0, out: "no dataset files\n" });
     await writeDataset(join(dir, "d"), { name: "team/qa", items: [{ input: 1 }, { input: 2 }] });

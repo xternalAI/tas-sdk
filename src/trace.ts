@@ -94,7 +94,11 @@ export const asText = (value: unknown): string => (typeof value === "string" ? v
 export function commonAttributes(span: SpanRecord): Record<string, unknown> {
   return {
     "tas.span.kind": span.kind,
-    ...(span.kind === "generation" ? { "gen_ai.operation.name": "chat" } : span.kind === "tool" ? { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": span.name } : {}),
+    ...(span.kind === "generation"
+      ? { "gen_ai.operation.name": "chat" }
+      : span.kind === "tool"
+        ? { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": span.name }
+        : {}),
     ...(span.model ? { "gen_ai.request.model": span.model } : {}),
     ...(span.usage ? { "gen_ai.usage.input_tokens": span.usage.inputTokens, "gen_ai.usage.output_tokens": span.usage.outputTokens } : {}),
     ...(span.prompt ? { "tas.prompt.name": span.prompt.name, "tas.prompt.hash": span.prompt.hash } : {}),
@@ -108,7 +112,8 @@ function otlpValue(value: unknown): Record<string, unknown> {
   if (typeof value === "string") return { stringValue: value };
   if (typeof value === "boolean") return { boolValue: value };
   if (typeof value === "number") return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
-  if (Array.isArray(value) && value.every((v) => typeof v === "string")) return { arrayValue: { values: value.map((v) => ({ stringValue: v })) } };
+  if (Array.isArray(value) && value.every((v) => typeof v === "string"))
+    return { arrayValue: { values: value.map((v) => ({ stringValue: v })) } };
   return { stringValue: JSON.stringify(value) };
 }
 
@@ -334,14 +339,22 @@ export class Tracer {
       const response = await fetchWithRetry(
         exporter.fetch ?? fetch,
         exporter.url,
-        { method: "POST", headers: { "content-type": "application/json", ...exporter.headers }, body: JSON.stringify(toOtlp(spans, exporter.attributes)), signal },
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", ...exporter.headers },
+          body: JSON.stringify(toOtlp(spans, exporter.attributes)),
+          signal,
+        },
         {
           retries: this.options.retries ?? (this.options.mode === "blocking" ? 0 : 2),
           ...(this.options.retryDelayMs === undefined ? {} : { baseDelayMs: this.options.retryDelayMs }),
           signal,
         },
       );
-      if (!response.ok) throw new Error(`${new URL(exporter.url).host} rejected ${spans.length} span(s): ${response.status} ${(await response.text().catch(() => "")).slice(0, 200)}`);
+      if (!response.ok)
+        throw new Error(
+          `${new URL(exporter.url).host} rejected ${spans.length} span(s): ${response.status} ${(await response.text().catch(() => "")).slice(0, 200)}`,
+        );
     } catch (error) {
       const report = this.options.onError ?? ((e: Error) => console.warn(`tas: trace export failed: ${e.message}`));
       report(error instanceof Error ? error : new Error(String(error)));

@@ -48,7 +48,10 @@ interface WireUsage {
   total_tokens?: number;
 }
 interface WireChunk {
-  choices?: { delta?: { content?: string | null; tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string | null }[];
+  choices?: {
+    delta?: { content?: string | null; tool_calls?: { index: number; id?: string; function?: { name?: string; arguments?: string } }[] };
+    finish_reason?: string | null;
+  }[];
   usage?: WireUsage | null;
 }
 
@@ -108,11 +111,15 @@ async function readStream(body: ReadableStream<Uint8Array>, onText: (delta: stri
 }
 
 /** Send one chat-completions request and return the reply. */
-export async function requestCompletion(gateway: GatewayConfig, body: Record<string, unknown>, options: RequestOptions = {}): Promise<Completion> {
+export async function requestCompletion(
+  gateway: GatewayConfig,
+  body: Record<string, unknown>,
+  options: RequestOptions = {},
+): Promise<Completion> {
   const streaming = options.onText !== undefined;
   const response = await fetchWithRetry(
     gateway.fetch ?? fetch,
-    gateway.baseURL.replace(/\/$/, "") + "/chat/completions",
+    `${gateway.baseURL.replace(/\/$/, "")}/chat/completions`,
     {
       method: "POST",
       headers: {
@@ -124,7 +131,11 @@ export async function requestCompletion(gateway: GatewayConfig, body: Record<str
       body: JSON.stringify(streaming ? { ...body, stream: true, stream_options: { include_usage: true } } : body),
       ...(options.signal ? { signal: options.signal } : {}),
     },
-    { retries: gateway.retries ?? 2, ...(gateway.retryDelayMs === undefined ? {} : { baseDelayMs: gateway.retryDelayMs }), ...(options.signal ? { signal: options.signal } : {}) },
+    {
+      retries: gateway.retries ?? 2,
+      ...(gateway.retryDelayMs === undefined ? {} : { baseDelayMs: gateway.retryDelayMs }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
   );
   if (!response.ok) {
     const text = await response.text().catch(() => "");

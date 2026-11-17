@@ -4,20 +4,24 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  type ChatMessage,
   createClient,
   GatewayError,
   memory,
   OutputValidationError,
   PromptArchivedError,
-  TemplateError,
-  ToolLoopError,
-  type ChatMessage,
   type PromptDefinition,
   type StandardSchema,
   type TasConfig,
+  TemplateError,
+  ToolLoopError,
 } from "../src/index.ts";
 
-type Reply = Partial<ChatMessage> | { status: number; body: string; headers?: Record<string, string> } | { networkError: string } | { sse: unknown[]; chunkSize?: number };
+type Reply =
+  | Partial<ChatMessage>
+  | { status: number; body: string; headers?: Record<string, string> }
+  | { networkError: string }
+  | { sse: unknown[]; chunkSize?: number };
 
 /** A streamed reply: server-sent events, deliberately cut into network chunks that split lines. */
 function sseResponse(events: unknown[], chunkSize = 17): Response {
@@ -62,22 +66,46 @@ const triage: PromptDefinition = {
     { role: "system", content: "You triage for {{company}}." },
     { role: "user", content: "{{ticket}}" },
   ],
-  tools: [{ name: "lookup_order", description: "Find an order", parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } }],
-  output: { name: "triage", strict: true, schema: { type: "object", properties: { queue: { type: "string", enum: ["billing", "tech"] } }, required: ["queue"] } },
+  tools: [
+    {
+      name: "lookup_order",
+      description: "Find an order",
+      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+  ],
+  output: {
+    name: "triage",
+    strict: true,
+    schema: { type: "object", properties: { queue: { type: "string", enum: ["billing", "tech"] } }, required: ["queue"] },
+  },
 };
-const plain: PromptDefinition = { type: "chat", name: "plain", model: { id: "gpt-5" }, messages: [{ role: "system", content: "Be brief." }] };
+const plain: PromptDefinition = {
+  type: "chat",
+  name: "plain",
+  model: { id: "gpt-5" },
+  messages: [{ role: "system", content: "Be brief." }],
+};
 const withTool: PromptDefinition = { ...plain, name: "with-tool", tools: triage.tools! };
 const variables = { company: "Acme", ticket: "I was charged twice" };
 
 function setup(gateway: ReturnType<typeof fakeGateway>, extra: Partial<TasConfig> = {}, gatewayExtra: Record<string, unknown> = {}) {
   return createClient({
     platform: memory(),
-    prompts: [triage, plain, withTool, { ...plain, name: "retired", archived: true }, { type: "text", name: "loopy", text: "{{#a}}x{{/a}}", model: { id: "m" } }, { type: "text", name: "no-model", text: "hi" }],
+    prompts: [
+      triage,
+      plain,
+      withTool,
+      { ...plain, name: "retired", archived: true },
+      { type: "text", name: "loopy", text: "{{#a}}x{{/a}}", model: { id: "m" } },
+      { type: "text", name: "no-model", text: "hi" },
+    ],
     gateway: { baseURL: "https://gw.test/v1/", apiKey: "gw-key", fetch: gateway.fetch, ...gatewayExtra },
     ...extra,
   });
 }
-const toolCall = (name: string, args: string, id = "call_1") => ({ tool_calls: [{ id, type: "function" as const, function: { name, arguments: args } }] });
+const toolCall = (name: string, args: string, id = "call_1") => ({
+  tool_calls: [{ id, type: "function" as const, function: { name, arguments: args } }],
+});
 
 describe("run", () => {
   it("sends the prompt's model, settings, tools and output schema, and returns parsed output", async () => {
@@ -94,7 +122,9 @@ describe("run", () => {
         { role: "system", content: "You triage for Acme." },
         { role: "user", content: "I was charged twice" },
       ],
-      tools: [{ type: "function", function: { name: "lookup_order", description: "Find an order", parameters: triage.tools![0]!.parameters } }],
+      tools: [
+        { type: "function", function: { name: "lookup_order", description: "Find an order", parameters: triage.tools![0]!.parameters } },
+      ],
       response_format: { type: "json_schema", json_schema: { name: "triage", strict: true, schema: triage.output!.schema } },
     });
     expect(result).toMatchObject({
@@ -114,12 +144,19 @@ describe("run", () => {
     const gw = fakeGateway({ content: "a" }, { content: "b" });
     const client = setup(gw, {}, { models: { "gpt-5": "openai/gpt-5" } });
     expect((await client.run("plain")).model).toBe("openai/gpt-5");
-    await client.run("plain", { model: "claude-sonnet-5-5", params: { temperature: 1, seed: 3 }, messages: [{ role: "user", content: "hi" }] });
+    await client.run("plain", {
+      model: "claude-sonnet-5-5",
+      params: { temperature: 1, seed: 3 },
+      messages: [{ role: "user", content: "hi" }],
+    });
     expect(gw.requests[1]!.body).toEqual({
       model: "claude-sonnet-5-5",
       temperature: 1,
       seed: 3,
-      messages: [{ role: "system", content: "Be brief." }, { role: "user", content: "hi" }],
+      messages: [
+        { role: "system", content: "Be brief." },
+        { role: "user", content: "hi" },
+      ],
     });
   });
 
@@ -131,10 +168,15 @@ describe("run", () => {
   });
 
   it("throws when the reply is not JSON or does not match the schema", async () => {
-    await expect(setup(fakeGateway({ content: "Sure! Here you go" })).run("triage", { variables })).rejects.toMatchObject({ issues: ["reply is not valid JSON"], text: "Sure! Here you go" });
+    await expect(setup(fakeGateway({ content: "Sure! Here you go" })).run("triage", { variables })).rejects.toMatchObject({
+      issues: ["reply is not valid JSON"],
+      text: "Sure! Here you go",
+    });
     const mismatch = setup(fakeGateway({ content: '{"queue":"sales"}' })).run("triage", { variables });
     await expect(mismatch).rejects.toBeInstanceOf(OutputValidationError);
-    await expect(setup(fakeGateway({ content: '{"queue":"sales"}' })).run("triage", { variables })).rejects.toThrow(/queue: must be equal to one of the allowed values/);
+    await expect(setup(fakeGateway({ content: '{"queue":"sales"}' })).run("triage", { variables })).rejects.toThrow(
+      /queue: must be equal to one of the allowed values/,
+    );
   });
 
   it("accepts a Standard Schema validator: typed, transformed output, and its JSON Schema sent to the model", async () => {
@@ -142,7 +184,10 @@ describe("run", () => {
       "~standard": {
         version: 1,
         vendor: "test",
-        validate: (v: any) => (typeof v?.queue === "string" ? { value: { queue: v.queue.toUpperCase(), urgent: v.urgent === true } } : { issues: [{ message: "required", path: ["queue"] }] }),
+        validate: (v: any) =>
+          typeof v?.queue === "string"
+            ? { value: { queue: v.queue.toUpperCase(), urgent: v.urgent === true } }
+            : { issues: [{ message: "required", path: ["queue"] }] },
         jsonSchema: { input: () => ({ type: "object", title: "from-validator" }), output: () => ({}) },
       },
     };
@@ -151,12 +196,17 @@ describe("run", () => {
     const result = await client.run("plain", { output: schema });
     const queue: string = result.output.queue; // compiles only because the type is inferred from the schema
     expect([queue, result.output.urgent]).toEqual(["TECH", false]);
-    expect(gw.requests[0]!.body.response_format.json_schema).toEqual({ name: "output", schema: { type: "object", title: "from-validator" } });
+    expect(gw.requests[0]!.body.response_format.json_schema).toEqual({
+      name: "output",
+      schema: { type: "object", title: "from-validator" },
+    });
     await expect(client.run("plain", { output: schema })).rejects.toThrow(/queue: required/);
   });
 
   it("a validator that cannot produce JSON Schema uses the prompt's schema for the model, or fails if there is none", async () => {
-    const opaque: StandardSchema<string> = { "~standard": { version: 1, vendor: "test", validate: (v: any) => ({ value: String(v.queue) }) } };
+    const opaque: StandardSchema<string> = {
+      "~standard": { version: 1, vendor: "test", validate: (v: any) => ({ value: String(v.queue) }) },
+    };
     const gw = fakeGateway({ content: '{"queue":"tech"}' });
     const result = await setup(gw).run("triage", { variables, output: opaque });
     expect(result.output).toBe("tech");
@@ -189,7 +239,12 @@ describe("tools", () => {
   });
 
   it("tools defined in code are sent to the model; bad arguments go back to the model instead of the function", async () => {
-    const gw = fakeGateway(toolCall("add", '{"a":"one"}'), toolCall("add", "not json", "call_2"), toolCall("add", '{"a":2,"b":3}', "call_3"), { content: "5" });
+    const gw = fakeGateway(
+      toolCall("add", '{"a":"one"}'),
+      toolCall("add", "not json", "call_2"),
+      toolCall("add", '{"a":2,"b":3}', "call_3"),
+      { content: "5" },
+    );
     const calls: unknown[] = [];
     const result = await setup(gw).run("plain", {
       tools: {
@@ -211,7 +266,13 @@ describe("tools", () => {
 
   it("an error thrown by a tool function propagates to the caller", async () => {
     const gw = fakeGateway(toolCall("lookup_order", '{"id":"A1"}'));
-    const failing = setup(gw).run("with-tool", { tools: { lookup_order: () => { throw new Error("database down"); } } });
+    const failing = setup(gw).run("with-tool", {
+      tools: {
+        lookup_order: () => {
+          throw new Error("database down");
+        },
+      },
+    });
     await expect(failing).rejects.toThrow("database down");
     expect(gw.requests).toHaveLength(1);
   });
@@ -267,7 +328,12 @@ describe("decisions: invocation", () => {
   });
 
   it("gives up after 2 retries by default, reporting the last failure with its status", async () => {
-    const gw = fakeGateway({ status: 503, body: "a" }, { status: 503, body: "b" }, { status: 503, body: "still down" }, { content: "never reached" });
+    const gw = fakeGateway(
+      { status: 503, body: "a" },
+      { status: 503, body: "b" },
+      { status: 503, body: "still down" },
+      { content: "never reached" },
+    );
     await expect(setup(gw, {}, fast).run("plain")).rejects.toMatchObject({ status: 503, message: expect.stringContaining("still down") });
     expect(gw.requests).toHaveLength(3);
   });
@@ -303,7 +369,11 @@ describe("decisions: invocation", () => {
 
   it("a text prompt is sent as a single user message", async () => {
     const gw = fakeGateway({ content: "x" });
-    await createClient({ platform: memory(), prompts: [{ type: "text", name: "t", text: "Summarise {{doc}}", model: { id: "m" } }], gateway: { baseURL: "https://gw.test/v1", fetch: gw.fetch } }).run("t", { variables: { doc: "this" } });
+    await createClient({
+      platform: memory(),
+      prompts: [{ type: "text", name: "t", text: "Summarise {{doc}}", model: { id: "m" } }],
+      gateway: { baseURL: "https://gw.test/v1", fetch: gw.fetch },
+    }).run("t", { variables: { doc: "this" } });
     expect(gw.requests[0]!.body.messages).toEqual([{ role: "user", content: "Summarise this" }]);
     expect(gw.requests[0]!.headers.authorization).toBeUndefined(); // no key configured, none sent
   });
@@ -324,10 +394,29 @@ describe("streaming", () => {
   };
 
   it("delivers text as it arrives and resolves to the same result a plain run gives", async () => {
-    const gw = fakeGateway({ sse: [textChunk("Hel"), textChunk("lo "), textChunk("there."), { choices: [{ delta: {}, finish_reason: "stop" }] }, usageChunk, "[DONE]"] });
+    const gw = fakeGateway({
+      sse: [
+        textChunk("Hel"),
+        textChunk("lo "),
+        textChunk("there."),
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        usageChunk,
+        "[DONE]",
+      ],
+    });
     const stream = setup(gw).stream("plain");
-    expect(await collect(stream)).toEqual([{ type: "text", delta: "Hel" }, { type: "text", delta: "lo " }, { type: "text", delta: "there." }]);
-    expect(await stream.result).toMatchObject({ text: "Hello there.", steps: 1, finishReason: "stop", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, toolCalls: [] });
+    expect(await collect(stream)).toEqual([
+      { type: "text", delta: "Hel" },
+      { type: "text", delta: "lo " },
+      { type: "text", delta: "there." },
+    ]);
+    expect(await stream.result).toMatchObject({
+      text: "Hello there.",
+      steps: 1,
+      finishReason: "stop",
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      toolCalls: [],
+    });
   });
 
   it("`text` yields just the words, whatever size the network chunks are", async () => {
@@ -348,7 +437,11 @@ describe("streaming", () => {
     ]);
     const result = await stream.result;
     expect(result).toMatchObject({ text: "Refunded.", steps: 2 });
-    expect(gw.requests[1]!.body.messages.at(-1)).toEqual({ role: "tool", tool_call_id: "call_9", content: '{"id":"A1","status":"refunded"}' });
+    expect(gw.requests[1]!.body.messages.at(-1)).toEqual({
+      role: "tool",
+      tool_call_id: "call_9",
+      content: '{"id":"A1","status":"refunded"}',
+    });
   });
 
   it("a tool call with no function still ends the run and is handed back", async () => {

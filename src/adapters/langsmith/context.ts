@@ -4,7 +4,7 @@
  */
 import { createHttp, type Http } from "../shared.ts";
 import { LangSmithError } from "./error.ts";
-import { type LangSmithOptions } from "./index.ts";
+import type { LangSmithOptions } from "./index.ts";
 
 export interface LangSmithContext {
   /**

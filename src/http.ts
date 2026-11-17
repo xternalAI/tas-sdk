@@ -50,7 +50,12 @@ function wait(ms: number, signal: AbortSignal | undefined): Promise<void> {
  * its status (the caller decides what a failure means); throws only when no response was ever
  * received, or the caller aborted.
  */
-export async function fetchWithRetry(doFetch: typeof fetch, url: string | URL, init: RequestInit, options: RetryOptions): Promise<Response> {
+export async function fetchWithRetry(
+  doFetch: typeof fetch,
+  url: string | URL,
+  init: RequestInit,
+  options: RetryOptions,
+): Promise<Response> {
   const base = options.baseDelayMs ?? 500;
   const max = options.maxDelayMs ?? 8000;
   for (let attempt = 0; ; attempt++) {

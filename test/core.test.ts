@@ -4,18 +4,18 @@ import {
   createClientPool,
   createMasker,
   currentClient,
+  ENVELOPE_KEY,
   extractVariables,
   findNonPortable,
   hashPrompt,
   memory,
+  type PromptDefinition,
+  PromptNotFoundError,
   packEnvelope,
   pii,
-  PromptNotFoundError,
   renderPrompt,
   unpackEnvelope,
   withClient,
-  ENVELOPE_KEY,
-  type PromptDefinition,
 } from "../src/index.ts";
 
 const triage: PromptDefinition = {
@@ -66,7 +66,7 @@ describe("template strictness", () => {
   it("treats mustache's unescaped forms as plain variables", () => {
     expect(render("{{{name}}} {{{ name }}} {{&name}} {{& name}}")).toBe("Ann Ann Ann Ann");
     expect(extractVariables(text("{{{a.b}}} {{&c}} {{d}}"))).toEqual(["a.b", "c", "d"]);
-    expect(findNonPortable(text("{{{name}}} {{&name}} {\"json\": 1} {single}"))).toEqual([]);
+    expect(findNonPortable(text('{{{name}}} {{&name}} {"json": 1} {single}'))).toEqual([]);
   });
 
   it.each([
@@ -84,7 +84,9 @@ describe("template strictness", () => {
   });
 
   it("strict: false sends unsupported syntax as written and still fills real variables", () => {
-    expect(render("{{#items}}{{name}}{{/items}} {{ name | upper }}", { name: "Ann" }, false)).toBe("{{#items}}Ann{{/items}} {{ name | upper }}");
+    expect(render("{{#items}}{{name}}{{/items}} {{ name | upper }}", { name: "Ann" }, false)).toBe(
+      "{{#items}}Ann{{/items}} {{ name | upper }}",
+    );
   });
 });
 

@@ -5,7 +5,7 @@
 import type { PromptModel, PromptTool } from "../../prompt/model.ts";
 import { fromOpenAITools, toOpenAITools } from "../shared.ts";
 import type { LangSmithOptions } from "./index.ts";
-import { cls, lc, type Lc } from "./lc.ts";
+import { cls, type Lc, lc } from "./lc.ts";
 
 /**
  * How LangSmith's playground stores each provider's model: the LangChain class it instantiates and
@@ -25,8 +25,17 @@ export type LangSmithProvider = keyof typeof LANGSMITH_PROVIDERS;
 
 /** Prefixes people put on model ids ("anthropic/claude-...") mapped to a provider. */
 const PREFIX: Record<string, LangSmithProvider> = {
-  openai: "openai", anthropic: "anthropic", google: "google", gemini: "google", google_genai: "google",
-  groq: "groq", fireworks: "fireworks", fireworks_ai: "fireworks", mistral: "mistral", mistralai: "mistral", deepseek: "deepseek",
+  openai: "openai",
+  anthropic: "anthropic",
+  google: "google",
+  gemini: "google",
+  google_genai: "google",
+  groq: "groq",
+  fireworks: "fireworks",
+  fireworks_ai: "fireworks",
+  mistral: "mistral",
+  mistralai: "mistral",
+  deepseek: "deepseek",
 };
 /** Bare model names recognised by family. Anything else is treated as OpenAI-compatible. */
 const FAMILY: [RegExp, LangSmithProvider][] = [

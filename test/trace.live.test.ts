@@ -14,8 +14,10 @@ describe.skipIf(!LIVE || targets.length === 0)("tracing (live)", { timeout: 60_0
   it.each(targets.map((t) => [t.id, t] as const))("%s accepts a trace with nested spans", async (_id, target) => {
     const errors: string[] = [];
     const client = createClient({ platform: memory(), tracing: [target], onTraceError: (error) => errors.push(error.message) });
-    await client.trace("tas-live-trace", { input: { check: true }, userId: "tas-live", sessionId: "tas-live", tags: ["tas-live"], metadata: { source: "trace.live.test" } }, () =>
-      client.trace("child", () => "ok"),
+    await client.trace(
+      "tas-live-trace",
+      { input: { check: true }, userId: "tas-live", sessionId: "tas-live", tags: ["tas-live"], metadata: { source: "trace.live.test" } },
+      () => client.trace("child", () => "ok"),
     );
     await client.flush();
     expect(errors).toEqual([]);

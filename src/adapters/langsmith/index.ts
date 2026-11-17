@@ -16,18 +16,16 @@
  * circle is safe because they only use the class inside functions, never while a module loads.
  */
 import type { PlatformAdapter } from "../../adapter.ts";
-import { PlatformError } from "../shared.ts";
 import { createContext } from "./context.ts";
 import { createDatasets } from "./datasets.ts";
+import { LangSmithError } from "./error.ts";
 import { createExperiments } from "./experiments.ts";
 import type { LangSmithProvider } from "./models.ts";
 import { createPrompts } from "./prompts.ts";
 import { createTracing } from "./tracing.ts";
-import { LangSmithError } from "./error.ts";
-
-export { LangSmithError };
 
 export { LANGSMITH_PROVIDERS, type LangSmithProvider } from "./models.ts";
+export { LangSmithError };
 
 export interface LangSmithOptions {
   /** Passed explicitly, never read from the environment: one process may hold many tenants' keys. */

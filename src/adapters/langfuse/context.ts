@@ -18,7 +18,7 @@ export interface LangfuseContext {
 }
 
 export function createContext(options: LangfuseOptions): LangfuseContext {
-  const baseURL = (options.baseURL ?? "https://cloud.langfuse.com").replace(/\/$/, "") + "/api/public";
+  const baseURL = `${(options.baseURL ?? "https://cloud.langfuse.com").replace(/\/$/, "")}/api/public`;
   const authorization = `Basic ${Buffer.from(`${options.publicKey}:${options.secretKey}`).toString("base64")}`;
   const http = createHttp({
     platform: "langfuse",

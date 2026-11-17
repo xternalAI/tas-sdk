@@ -2,13 +2,14 @@
  * The `PromptRegistry` for LangSmith: a prompt is a repo, a version is a commit holding a manifest,
  * and a label is a commit tag. This file makes the API calls; `manifest.ts` does the translation.
  */
-import { ENVELOPE_KEY, tagsWithArchiveMarker } from "../../adapter.ts";
+
 import type { PromptCapabilities, PromptRegistry, PushOptions, RemotePrompt } from "../../adapter.ts";
-import { hashPrompt, parsePrompt, type PromptDefinition, type PromptRef } from "../../prompt/model.ts";
+import { ENVELOPE_KEY, tagsWithArchiveMarker } from "../../adapter.ts";
+import { hashPrompt, type PromptDefinition, type PromptRef, parsePrompt } from "../../prompt/model.ts";
 import type { LangSmithContext } from "./context.ts";
 import { LangSmithError } from "./error.ts";
 import type { Lc } from "./lc.ts";
-import { decode, encode, toHandle, toName, type Repo } from "./manifest.ts";
+import { decode, encode, type Repo, toHandle, toName } from "./manifest.ts";
 
 interface Commit {
   commit_hash: string;
@@ -62,7 +63,10 @@ async function toRemote(ctx: LangSmithContext, handle: string, commit: Commit): 
 /** Tag endpoints want the commit's UUID, which only the commit list exposes. */
 async function commitId(ctx: LangSmithContext, handle: string, hash: string): Promise<string> {
   for (let offset = 0; ; offset += 100) {
-    const page = await ctx.http.find<{ commits: { id: string; commit_hash: string }[] }>("GET", `/commits/-/${handle}?limit=100&offset=${offset}`);
+    const page = await ctx.http.find<{ commits: { id: string; commit_hash: string }[] }>(
+      "GET",
+      `/commits/-/${handle}?limit=100&offset=${offset}`,
+    );
     const found = page?.commits.find((c) => c.commit_hash === hash);
     if (found) return found.id;
     if (!page || page.commits.length < 100) throw new LangSmithError(`langsmith: no version ${hash} of "${toName(handle)}"`);
@@ -74,7 +78,8 @@ async function pointTags(ctx: LangSmithContext, handle: string, id: string, labe
   if (!labels.length) return;
   const existing = new Set((await fetchTags(ctx, handle)).map((t) => t.tag_name));
   for (const label of labels) {
-    if (existing.has(label)) await ctx.http.find("PATCH", `/repos/-/${handle}/tags/${encodeURIComponent(label)}`, { body: { commit_id: id } });
+    if (existing.has(label))
+      await ctx.http.find("PATCH", `/repos/-/${handle}/tags/${encodeURIComponent(label)}`, { body: { commit_id: id } });
     else await ctx.http.find("POST", `/repos/-/${handle}/tags`, { body: { tag_name: label, commit_id: id } });
   }
 }
@@ -116,7 +121,8 @@ async function pushPrompt(ctx: LangSmithContext, definition: PromptDefinition, p
   const labels = pushOptions?.labels ?? [];
 
   const latest = await fetchCommit(ctx, handle, "latest");
-  const unchanged = latest && hashPrompt((await toRemote(ctx, handle, latest)).definition) === hashPrompt(decode(handle, manifest, undefined, resolver));
+  const unchanged =
+    latest && hashPrompt((await toRemote(ctx, handle, latest)).definition) === hashPrompt(decode(handle, manifest, undefined, resolver));
   if (latest && unchanged) {
     await pointTags(ctx, handle, labels.length ? await commitId(ctx, handle, latest.commit_hash) : "", labels);
     return toRemote(ctx, handle, latest);

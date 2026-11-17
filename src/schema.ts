@@ -23,7 +23,12 @@ export interface StandardSchema<Output = unknown> {
 }
 type StandardResult<Output> =
   | { readonly value: Output; readonly issues?: undefined }
-  | { readonly issues: ReadonlyArray<{ readonly message: string; readonly path?: ReadonlyArray<PropertyKey | { key: PropertyKey }> | undefined }> };
+  | {
+      readonly issues: ReadonlyArray<{
+        readonly message: string;
+        readonly path?: ReadonlyArray<PropertyKey | { key: PropertyKey }> | undefined;
+      }>;
+    };
 
 export type JsonSchema = Record<string, unknown>;
 export type SchemaInput<Output = unknown> = StandardSchema<Output> | JsonSchema;
@@ -55,6 +60,8 @@ export async function validateSchema<T>(schema: SchemaInput<T>, value: unknown):
     };
   }
   if (Value.Check(schema as never, value)) return { ok: true, value: value as T };
-  const issues = Value.Errors(schema as never, value).map((e) => `${e.instancePath.slice(1).replaceAll("/", ".") || "value"}: ${e.message}`);
+  const issues = Value.Errors(schema as never, value).map(
+    (e) => `${e.instancePath.slice(1).replaceAll("/", ".") || "value"}: ${e.message}`,
+  );
   return { ok: false, issues: [...new Set(issues)] };
 }

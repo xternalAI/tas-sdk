@@ -24,7 +24,10 @@ export function toOpenAIContent(content: MessageContent): string | OpenAIPart[] 
     if (part.type === "image") return { type: "image_url", image_url: { url: part.url, ...(part.detail ? { detail: part.detail } : {}) } };
     // Inline data goes as `file_data`. Anything else (a URL, or a {{variable}} not yet filled) is a reference.
     const where = isDataUri(part.url) ? { file_data: part.url } : { file_id: part.url };
-    return { type: "file", file: { ...where, ...(part.name ? { filename: part.name } : {}), ...(part.mediaType ? { format: part.mediaType } : {}) } };
+    return {
+      type: "file",
+      file: { ...where, ...(part.name ? { filename: part.name } : {}), ...(part.mediaType ? { format: part.mediaType } : {}) },
+    };
   });
 }
 
@@ -35,7 +38,8 @@ export function fromOpenAIContent(content: unknown): MessageContent {
   return content.map((raw): ContentPart => {
     const part = raw as OpenAIPart & { type: string };
     if (part.type === "text") return { type: "text", text: part.text };
-    if (part.type === "image_url") return { type: "image", url: part.image_url.url, ...(part.image_url.detail ? { detail: part.image_url.detail } : {}) };
+    if (part.type === "image_url")
+      return { type: "image", url: part.image_url.url, ...(part.image_url.detail ? { detail: part.image_url.detail } : {}) };
     if (part.type === "file" && (part.file.file_data ?? part.file.file_id)) {
       return {
         type: "file",
@@ -60,9 +64,18 @@ export function textOnly(content: MessageContent): string {
 }
 
 const MEDIA_TYPES: Record<string, string> = {
-  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
-  ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv", ".json": "application/json",
-  ".mp3": "audio/mpeg", ".wav": "audio/wav",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".csv": "text/csv",
+  ".json": "application/json",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
 };
 
 /** A data: URI for bytes you already hold. */

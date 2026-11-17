@@ -69,7 +69,9 @@ export async function loadDataset<Input = unknown, Expected = unknown>(path: str
 export function stringifyDataset(dataset: Dataset): string {
   const line = (item: DatasetItem) => {
     const source = item as unknown as Record<string, unknown>;
-    return JSON.stringify(Object.fromEntries(ITEM_KEYS.filter((k) => source[k] !== undefined && source[k] !== null).map((k) => [k, source[k]])));
+    return JSON.stringify(
+      Object.fromEntries(ITEM_KEYS.filter((k) => source[k] !== undefined && source[k] !== null).map((k) => [k, source[k]])),
+    );
   };
   return dataset.items.map(line).join("\n") + (dataset.items.length ? "\n" : "");
 }
@@ -133,7 +135,10 @@ export async function pushDataset(dir: string, store: DatasetStore, name: string
   const dataset = await loadDataset(datasetPath(dir, name));
   const ids = dataset.items.map(itemId);
   const duplicate = ids.find((id, i) => ids.indexOf(id) !== i);
-  if (duplicate) throw new Error(`dataset "${name}": two items share the id "${duplicate}" (ids default to a hash of the input; give them explicit ids)`);
+  if (duplicate)
+    throw new Error(
+      `dataset "${name}": two items share the id "${duplicate}" (ids default to a hash of the input; give them explicit ids)`,
+    );
   await store.push({ ...dataset, name, items: dataset.items.map((item) => ({ ...item, id: itemId(item) })) });
   return { name, action: "pushed", items: dataset.items.length };
 }
