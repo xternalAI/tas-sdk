@@ -4,3 +4,4 @@ dist
 
 # scratch folders made by the type tests
 test/.types-*
+coverage

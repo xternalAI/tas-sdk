@@ -3,11 +3,9 @@
  * docs/decisions.md: scores are 0..1, one failing item or scorer never stops a run, reporting
  * failures never lose results, and item ids default to a hash of the input.
  */
-import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   braintrust,
@@ -23,6 +21,7 @@ import {
   type PlatformAdapter,
   type SpanRecord,
 } from "../src/index.ts";
+import { cli, SDK } from "./cli.ts";
 
 const capitals = [
   { id: "lv", input: { country: "Latvia" }, expected: "Riga" },
@@ -339,24 +338,19 @@ describe("experiment reporting", () => {
 });
 
 describe("tas eval", () => {
-  const cli = (args: string[]) =>
-    promisify(execFile)(process.execPath, [resolve("src/cli.ts"), ...args], { cwd: dir }).then(
-      (r) => ({ code: 0, out: r.stdout + r.stderr }),
-      (e: { code: number; stdout: string; stderr: string }) => ({ code: e.code, out: e.stdout + e.stderr }),
-    );
+  const run = (args: string[]) => cli(args, dir);
 
   it("runs eval files against the configured client and exits 1 when a threshold is missed", async () => {
-    const index = JSON.stringify(resolve("src/index.ts"));
-    await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${index};\nexport default defineConfig({ platform: memory() });\n`);
+    await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory() });\n`);
     await writeFile(join(dir, "data.dataset.jsonl"), '{"input":2,"expected":4}\n{"input":3,"expected":9}\n');
     const evalFile = (threshold: number) =>
-      `import { defineEval, exactMatch, loadDataset } from ${index};\n` +
-      `export default async (tas) => [defineEval({ name: "squares", data: await loadDataset("data.dataset.jsonl"), task: (n) => (n === 3 ? 10 : n * n), scorers: { exact: exactMatch }, thresholds: { exact: ${threshold} } })];\n`;
+      `import { defineEval, exactMatch, loadDataset } from ${SDK};\n` +
+      `export default async (tas) => [defineEval({ name: "squares", data: await loadDataset(${JSON.stringify(join(dir, "data.dataset.jsonl"))}), task: (n) => (n === 3 ? 10 : n * n), scorers: { exact: exactMatch }, thresholds: { exact: ${threshold} } })];\n`;
 
     await writeFile(join(dir, "ok.eval.ts"), evalFile(0.5));
-    expect(await cli(["eval", "ok.eval.ts"])).toEqual({ code: 0, out: "pass  squares  2 items  exact 0.500\n" });
+    expect(await run(["eval", "ok.eval.ts"])).toEqual({ code: 0, out: "pass  squares  2 items  exact 0.500\n" });
     await writeFile(join(dir, "strict.eval.ts"), evalFile(0.9));
-    expect(await cli(["eval", "strict.eval.ts"])).toEqual({ code: 1, out: "FAIL  squares  2 items  exact 0.500\n      below threshold: exact: 0.500 < 0.9\n" });
-    expect((await cli(["eval"])).out).toMatch(/eval needs at least one file/);
+    expect(await run(["eval", "strict.eval.ts"])).toEqual({ code: 1, out: "FAIL  squares  2 items  exact 0.500\n      below threshold: exact: 0.500 < 0.9\n" });
+    expect((await run(["eval"])).out).toMatch(/eval needs at least one file/);
   });
 });

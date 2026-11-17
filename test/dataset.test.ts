@@ -3,13 +3,12 @@
  * docs/decisions.md: pull never deletes rows from a file, push never deletes rows on a platform,
  * the platform's version of an item wins on pull, and hashed ids stay out of the file.
  */
-import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { braintrust, datasetPath, itemId, langfuse, langsmith, loadDataset, memory, pullDataset, pushDataset, stringifyDataset, writeDataset, type DatasetStore } from "../src/index.ts";
+import { cli, SDK } from "./cli.ts";
 import { datasetConformance, datasetItems } from "./conformance.ts";
 
 let dir: string;
@@ -131,21 +130,37 @@ describe("how each platform's rows are read", () => {
   });
 });
 
+describe("listing datasets on each platform", () => {
+  const paged = (pages: unknown[]) => (async () => new Response(JSON.stringify(pages.shift() ?? []))) as typeof fetch;
+  const names = (from: number, count: number) => Array.from({ length: count }, (_, i) => ({ name: `d${from + i}` }));
+
+  it("Braintrust lists the project's datasets", async () => {
+    const store = braintrust({ apiKey: "k", projectId: "p", fetch: paged([{ objects: names(0, 2) }]) }).datasets!;
+    expect(await store.list()).toEqual(["d0", "d1"]);
+  });
+
+  it("Langfuse follows pages until the last", async () => {
+    const store = langfuse({ publicKey: "pk", secretKey: "sk", fetch: paged([{ data: names(0, 2), meta: { totalPages: 2 } }, { data: names(2, 1), meta: { totalPages: 2 } }]) }).datasets!;
+    expect(await store.list()).toEqual(["d0", "d1", "d2"]);
+  });
+
+  it("LangSmith follows pages until a short one", async () => {
+    const store = langsmith({ apiKey: "k", fetch: paged([names(0, 100), names(100, 3)]) }).datasets!;
+    expect(await store.list()).toHaveLength(103);
+  });
+});
+
 describe("tas datasets", () => {
-  const cli = (args: string[]) =>
-    promisify(execFile)(process.execPath, [resolve("src/cli.ts"), ...args], { cwd: dir }).then(
-      (r) => ({ code: 0, out: r.stdout + r.stderr }),
-      (e: { code: number; stdout: string; stderr: string }) => ({ code: e.code, out: e.stdout + e.stderr }),
-    );
+  const run = (args: string[]) => cli(args, dir);
 
   it("lists, pushes every dataset file, and reports a dataset the platform does not have", async () => {
-    await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${JSON.stringify(resolve("src/index.ts"))};\nexport default defineConfig({ platform: memory(), datasetsDir: "d" });\n`);
-    expect(await cli(["datasets", "list"])).toEqual({ code: 0, out: "no datasets\n" });
-    expect(await cli(["datasets", "push"])).toEqual({ code: 0, out: "no dataset files\n" });
+    await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory(), datasetsDir: "d" });\n`);
+    expect(await run(["datasets", "list"])).toEqual({ code: 0, out: "no datasets\n" });
+    expect(await run(["datasets", "push"])).toEqual({ code: 0, out: "no dataset files\n" });
     await writeDataset(join(dir, "d"), { name: "team/qa", items: [{ input: 1 }, { input: 2 }] });
     await writeDataset(join(dir, "d"), { name: "smoke", items: [{ input: 1 }] });
-    expect(await cli(["datasets", "push"])).toEqual({ code: 0, out: "pushed     smoke  1 items\npushed     team/qa  2 items\n" });
-    expect(await cli(["datasets", "pull", "nope"])).toEqual({ code: 1, out: "missing    nope  (not on the platform)\n" });
-    expect((await cli(["datasets"])).code).toBe(2);
+    expect(await run(["datasets", "push"])).toEqual({ code: 0, out: "pushed     smoke  1 items\npushed     team/qa  2 items\n" });
+    expect(await run(["datasets", "pull", "nope"])).toEqual({ code: 1, out: "missing    nope  (not on the platform)\n" });
+    expect((await run(["datasets"])).code).toBe(2);
   });
 });

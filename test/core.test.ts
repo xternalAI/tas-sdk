@@ -184,6 +184,19 @@ describe("multi-tenancy", () => {
     await expect(pool.get("flaky")).resolves.toBeDefined();
   });
 
+  it("evicting or closing the pool closes its clients, and a tenant evicted is built afresh next time", async () => {
+    let built = 0;
+    const pool = createClientPool({ resolve: () => (built++, { platform: memory() }) });
+    const first = await pool.get("a");
+    await pool.get("b");
+    await pool.evict("a");
+    await pool.evict("never-seen"); // nothing to do, and no error
+    expect(await pool.get("a")).not.toBe(first);
+    await pool.close();
+    await pool.get("a");
+    expect(built).toBe(4);
+  });
+
   it("withClient scopes a client across awaits without leaking between requests", async () => {
     const a = createClient({ platform: memory() });
     const b = createClient({ platform: memory() });

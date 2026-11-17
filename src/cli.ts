@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { existsSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
@@ -12,7 +11,15 @@ import { loadPrompts, writePromptSchema } from "./prompt/file.ts";
 import { generatePromptTypes } from "./prompt/types.ts";
 import { pull, push, remove, status, type SyncContext, type SyncResult } from "./sync.ts";
 
-const USAGE = `tas prompts <status|pull|push|delete|schema|types> [names...]
+/**
+ * The `tas` command line. `runCli` is the whole program as a function: it takes arguments and
+ * somewhere to write, and returns an exit code, so it can be tested without starting a process.
+ * `bin.ts` is the thin executable around it.
+ *
+ * Each command is one entry in `COMMANDS`. To add a command, add an entry and a line to `USAGE`.
+ */
+
+export const USAGE = `tas prompts <status|pull|push|delete|schema|types> [names...]
 
   status   compare prompt files with the platform
   pull     platform -> files
@@ -46,166 +53,213 @@ Options
   --yes              delete: confirm. Without it, delete only lists what it would remove
 `;
 
+export interface CliIO {
+  /** Directory relative paths are resolved against. Default: the process's. */
+  cwd: string;
+  /** Receives each line of normal output. Default: console.log. */
+  log: (line: string) => void;
+  /** Receives error lines. Default: console.error. */
+  error: (line: string) => void;
+}
+
+interface Flags {
+  config: string | undefined;
+  profile: string | undefined;
+  label: string[] | undefined;
+  force: boolean;
+  yes: boolean;
+}
+
+/** Everything a command needs. */
+interface Invocation {
+  /** Arguments after the command, e.g. prompt names. */
+  args: string[];
+  flags: Flags;
+  io: CliIO;
+  config: TasConfig;
+  /** The profile in use, which is also the lockfile section. */
+  target: string;
+  /** Resolve a path against the working directory. */
+  path: (...parts: string[]) => string;
+}
+type Command = (inv: Invocation) => Promise<number>;
+
+/** A message for the user, as opposed to a bug: printed without a stack trace. */
+class UsageError extends Error {}
+
 const CONFIG_NAMES = ["tas.config.ts", "tas.config.mts", "tas.config.js", "tas.config.mjs"];
 
-async function loadConfig(path: string | undefined, profile: string | undefined) {
-  const file = path ? resolve(path) : CONFIG_NAMES.map((n) => resolve(n)).find(existsSync);
-  if (!file || !existsSync(file)) throw new Error(`no config found (looked for ${path ?? CONFIG_NAMES.join(", ")})`);
+async function loadConfig(cwd: string, path: string | undefined, profile: string | undefined): Promise<{ config: TasConfig; target: string }> {
+  const file = path ? resolve(cwd, path) : CONFIG_NAMES.map((name) => resolve(cwd, name)).find(existsSync);
+  if (!file || !existsSync(file)) throw new UsageError(`no config found (looked for ${path ?? CONFIG_NAMES.join(", ")})`);
   const loaded = ((await import(pathToFileURL(file).href)) as { default?: TasConfig | TasProfiles }).default;
-  if (!loaded) throw new Error(`${file} has no default export`);
+  if (!loaded) throw new UsageError(`${file} has no default export`);
   if ("profiles" in loaded) {
     const name = profile ?? loaded.default;
     const config = loaded.profiles[name];
-    if (!config) throw new Error(`no profile "${name}" (have: ${Object.keys(loaded.profiles).join(", ")})`);
+    if (!config) throw new UsageError(`no profile "${name}" (have: ${Object.keys(loaded.profiles).join(", ")})`);
     return { config, target: name };
   }
-  if (profile) throw new Error(`--profile given but ${file} defines a single config`);
+  if (profile) throw new UsageError(`--profile given but ${file} defines a single config`);
   return { config: loaded, target: "default" };
 }
 
-function report(results: SyncResult[]): number {
+// ---------------------------------------------------------------------------------------------
+// prompts
+// ---------------------------------------------------------------------------------------------
+
+const promptsDir = (inv: Invocation) => inv.path(inv.config.promptsDir ?? "prompts");
+
+function syncContext(inv: Invocation): SyncContext {
+  const registry = inv.config.platform.prompts;
+  if (!registry) throw new UsageError(`platform "${inv.config.platform.id}" has no prompt registry`);
+  return { dir: promptsDir(inv), registry, platform: inv.config.platform.id, canonical: inv.config.canonical ?? "repo", target: inv.target };
+}
+
+const REASONS: Record<NonNullable<SyncResult["reason"]>, (r: SyncResult) => string> = {
+  "other-side-changed": () => "other side changed; use --force",
+  "non-portable": () => "non-portable template syntax; use --force",
+  "deleted-locally": () => "deleted here, still on the platform; `tas prompts delete` removes it there",
+  "deleted-remotely": () => "deleted on the platform; use --force to act anyway",
+  unreadable: (r) => `cannot be read from the platform: ${r.error}`,
+};
+
+/** Print one line per prompt and return the exit code: 1 if anything was refused. */
+function reportSync(results: SyncResult[], io: CliIO): number {
   for (const r of results) {
-    const note =
-      r.reason === "other-side-changed"
-        ? "  (other side changed; use --force)"
-        : r.reason === "non-portable"
-          ? "  (non-portable template syntax; use --force)"
-          : r.reason === "deleted-locally"
-            ? "  (deleted here, still on the platform; `tas prompts delete` removes it there)"
-            : r.reason === "deleted-remotely"
-              ? "  (deleted on the platform; use --force to act anyway)"
-              : r.reason === "unreadable"
-                ? `  (cannot be read from the platform: ${r.error})`
-              : r.overwrote
-                ? `  (overwrote ${r.overwrote} change)`
-                : "";
-    console.log(`${r.action.padEnd(10)} ${r.name}${r.version ? `  @${r.version}` : ""}${note}`);
-    if (r.nonPortable) console.log(`           not portable: ${r.nonPortable.join("  ")}`);
+    const note = r.reason ? REASONS[r.reason](r) : r.overwrote ? `overwrote ${r.overwrote} change` : "";
+    io.log(`${r.action.padEnd(10)} ${r.name}${r.version ? `  @${r.version}` : ""}${note ? `  (${note})` : ""}`);
+    if (r.nonPortable) io.log(`           not portable: ${r.nonPortable.join("  ")}`);
   }
   return results.some((r) => r.action === "refused") ? 1 : 0;
 }
 
-async function main(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      config: { type: "string" },
-      profile: { type: "string" },
-      label: { type: "string", multiple: true },
-      force: { type: "boolean", default: false },
-      yes: { type: "boolean", default: false },
-      help: { type: "boolean", short: "h", default: false },
-    },
-  });
-  if (positionals[0] === "eval" && !values.help) return runEvals(positionals.slice(1), values.config, values.profile);
-  if (positionals[0] === "datasets" && !values.help) return runDatasets(positionals[1], positionals.slice(2), values.config, values.profile);
-  const [group, command, ...names] = positionals;
-  if (values.help || group !== "prompts" || !command || !["status", "pull", "push", "delete", "schema", "types"].includes(command)) {
-    console.log(USAGE);
-    return values.help ? 0 : 2;
-  }
+const only = (inv: Invocation) => (inv.args.length ? { only: inv.args } : {});
 
-  const { config, target } = await loadConfig(values.config, values.profile);
-  if (command === "schema") {
-    const written = await writePromptSchema(resolve(config.promptsDir ?? "prompts"));
-    console.log(`wrote ${written}`);
-    console.log(`Files written by "tas prompts pull" reference it on their first line. For files you write by hand, add that line`);
-    console.log(`or map it in your editor, e.g. VS Code settings: "yaml.schemas": { "${written}": "*.prompt.yaml" }`);
-    return 0;
-  }
-  if (command === "types") {
-    const dir = resolve(config.promptsDir ?? "prompts");
-    const definitions = await loadPrompts(dir);
-    const file = resolve(dir, "prompts.ts");
-    await writeFile(file, generatePromptTypes(definitions));
-    console.log(`wrote ${file} (${definitions.length} prompts)`);
-    return 0;
-  }
-  const registry = config.platform.prompts;
-  if (!registry) throw new Error(`platform "${config.platform.id}" has no prompt registry`);
-  const ctx: SyncContext = {
-    dir: resolve(config.promptsDir ?? "prompts"),
-    registry,
-    platform: config.platform.id,
-    canonical: config.canonical ?? "repo",
-    target,
-  };
-  const only = names.length ? { only: names } : {};
-
-  if (command === "status") {
-    const entries = (await status(ctx)).filter((e) => !names.length || names.includes(e.name));
-    for (const e of entries) {
-      console.log(`${e.state.padEnd(15)} ${e.name}`);
-      if (e.nonPortable) console.log(`                not portable: ${e.nonPortable.join("  ")}`);
-      if (e.error) console.log(`                ${e.error}`);
+const promptCommands: Record<string, Command> = {
+  async status(inv) {
+    const entries = (await status(syncContext(inv))).filter((entry) => !inv.args.length || inv.args.includes(entry.name));
+    for (const entry of entries) {
+      inv.io.log(`${entry.state.padEnd(15)} ${entry.name}`);
+      if (entry.nonPortable) inv.io.log(`                not portable: ${entry.nonPortable.join("  ")}`);
+      if (entry.error) inv.io.log(`                ${entry.error}`);
     }
-    if (!entries.length) console.log("no prompts");
+    if (!entries.length) inv.io.log("no prompts");
     return 0;
-  }
-  if (command === "delete") {
-    if (!names.length) throw new Error("delete needs at least one prompt name");
-    if (!values.yes) {
-      for (const name of names) console.log(`would delete ${name} from ${config.platform.id} (all versions) and its local file`);
-      console.log("Nothing deleted. This cannot be undone on the platform; re-run with --yes to confirm.");
+  },
+
+  async pull(inv) {
+    return reportSync(await pull(syncContext(inv), { force: inv.flags.force, ...only(inv) }), inv.io);
+  },
+
+  async push(inv) {
+    const labels = inv.flags.label ? { labels: inv.flags.label } : {};
+    return reportSync(await push(syncContext(inv), { force: inv.flags.force, ...labels, ...only(inv) }), inv.io);
+  },
+
+  async delete(inv) {
+    if (!inv.args.length) throw new UsageError("delete needs at least one prompt name");
+    if (!inv.flags.yes) {
+      for (const name of inv.args) inv.io.log(`would delete ${name} from ${inv.config.platform.id} (all versions) and its local file`);
+      inv.io.log("Nothing deleted. This cannot be undone on the platform; re-run with --yes to confirm.");
       return 1;
     }
-    return report(await remove(ctx, names));
-  }
-  if (command === "pull") return report(await pull(ctx, { force: values.force, ...only }));
-  return report(await push(ctx, { force: values.force, ...(values.label ? { labels: values.label } : {}), ...only }));
+    return reportSync(await remove(syncContext(inv), inv.args), inv.io);
+  },
+
+  async schema(inv) {
+    const written = await writePromptSchema(promptsDir(inv));
+    inv.io.log(`wrote ${written}`);
+    inv.io.log(`Files written by "tas prompts pull" reference it on their first line. For files you write by hand, add that line`);
+    inv.io.log(`or map it in your editor, e.g. VS Code settings: "yaml.schemas": { "${written}": "*.prompt.yaml" }`);
+    return 0;
+  },
+
+  async types(inv) {
+    const definitions = await loadPrompts(promptsDir(inv));
+    const file = resolve(promptsDir(inv), "prompts.ts");
+    await writeFile(file, generatePromptTypes(definitions));
+    inv.io.log(`wrote ${file} (${definitions.length} prompts)`);
+    return 0;
+  },
+};
+
+// ---------------------------------------------------------------------------------------------
+// datasets
+// ---------------------------------------------------------------------------------------------
+
+const datasetsDir = (inv: Invocation) => inv.path(inv.config.datasetsDir ?? "datasets");
+
+function datasetStore(inv: Invocation) {
+  const store = inv.config.platform.datasets;
+  if (!store) throw new UsageError(`platform "${inv.config.platform.id}" does not store datasets`);
+  return store;
 }
 
-async function runDatasets(command: string | undefined, names: string[], configPath: string | undefined, profile: string | undefined): Promise<number> {
-  if (!command || !["list", "pull", "push"].includes(command)) {
-    console.log(USAGE);
-    return 2;
-  }
-  const { config } = await loadConfig(configPath, profile);
-  const store = config.platform.datasets;
-  if (!store) throw new Error(`platform "${config.platform.id}" does not store datasets`);
-  const dir = resolve(config.datasetsDir ?? "datasets");
+/** Names of the dataset files under a directory, e.g. "team/qa" for team/qa.dataset.jsonl. */
+async function datasetFiles(dir: string): Promise<string[]> {
+  const entries = await readdir(dir, { recursive: true }).catch(() => [] as string[]);
+  return entries
+    .filter((file) => file.endsWith(DATASET_EXTENSION))
+    .map((file) => file.slice(0, -DATASET_EXTENSION.length).split(sep).join("/"))
+    .sort();
+}
 
-  if (command === "list") {
-    const all = await store.list();
-    console.log(all.length ? all.sort().join("\n") : "no datasets");
+const datasetCommands: Record<string, Command> = {
+  async list(inv) {
+    const names = await datasetStore(inv).list();
+    inv.io.log(names.length ? names.sort().join("\n") : "no datasets");
     return 0;
-  }
-  if (command === "pull") {
+  },
+
+  async pull(inv) {
+    const store = datasetStore(inv);
     let missing = false;
-    for (const name of names.length ? names : await store.list()) {
-      const r = await pullDataset(dir, store, name);
+    for (const name of inv.args.length ? inv.args : await store.list()) {
+      const r = await pullDataset(datasetsDir(inv), store, name);
       missing ||= r.action === "missing";
-      console.log(r.action === "missing" ? `missing    ${name}  (not on the platform)` : `pulled     ${name}  ${r.items} items  (${r.added} new, ${r.updated} changed, ${r.localOnly} only in the file)`);
+      inv.io.log(
+        r.action === "missing"
+          ? `missing    ${name}  (not on the platform)`
+          : `pulled     ${name}  ${r.items} items  (${r.added} new, ${r.updated} changed, ${r.localOnly} only in the file)`,
+      );
     }
     return missing ? 1 : 0;
-  }
-  const files = names.length ? names : (await readdir(dir, { recursive: true }).catch(() => [] as string[])).filter((f) => f.endsWith(DATASET_EXTENSION)).map((f) => f.slice(0, -DATASET_EXTENSION.length).split(sep).join("/")).sort();
-  for (const name of files) {
-    const r = await pushDataset(dir, store, name);
-    console.log(`pushed     ${name}  ${r.items} items`);
-  }
-  if (!files.length) console.log("no dataset files");
-  return 0;
-}
+  },
 
-async function runEvals(files: string[], configPath: string | undefined, profile: string | undefined): Promise<number> {
-  if (!files.length) throw new Error("eval needs at least one file");
-  const { config } = await loadConfig(configPath, profile);
-  const client = createClient({ ...config, prompts: config.prompts ?? (await loadPrompts(resolve(config.promptsDir ?? "prompts"))) });
+  async push(inv) {
+    const store = datasetStore(inv);
+    const names = inv.args.length ? inv.args : await datasetFiles(datasetsDir(inv));
+    for (const name of names) {
+      const r = await pushDataset(datasetsDir(inv), store, name);
+      inv.io.log(`pushed     ${name}  ${r.items} items`);
+    }
+    if (!names.length) inv.io.log("no dataset files");
+    return 0;
+  },
+};
+
+// ---------------------------------------------------------------------------------------------
+// eval
+// ---------------------------------------------------------------------------------------------
+
+async function runEvals(inv: Invocation): Promise<number> {
+  if (!inv.args.length) throw new UsageError("eval needs at least one file");
+  const client = createClient({ ...inv.config, prompts: inv.config.prompts ?? (await loadPrompts(promptsDir(inv))) });
   let failed = false;
   try {
-    for (const file of files) {
-      const exported = ((await import(pathToFileURL(resolve(file)).href)) as { default?: unknown }).default;
+    for (const file of inv.args) {
+      const exported = ((await import(pathToFileURL(inv.path(file)).href)) as { default?: unknown }).default;
       const resolved = typeof exported === "function" ? await exported(client) : exported;
       const definitions = (Array.isArray(resolved) ? resolved : [resolved]) as EvalDefinition[];
-      if (!definitions[0]?.name) throw new Error(`${file}: default export must be defineEval({...}), an array of them, or a function returning either`);
+      if (!definitions[0]?.name) throw new UsageError(`${file}: default export must be defineEval({...}), an array of them, or a function returning either`);
       for (const { name, ...options } of definitions) {
         const result = await client.evaluate(name, options);
-        const scores = Object.entries(result.summary.scores).map(([k, v]) => `${k} ${v.mean.toFixed(3)}`).join("  ") || "(no scores)";
-        console.log(`${result.passed ? "pass" : "FAIL"}  ${name}  ${result.rows.length} items  ${scores}${result.summary.errors ? `  ${result.summary.errors} errored` : ""}`);
-        for (const failure of result.failures) console.log(`      below threshold: ${failure}`);
-        for (const report of result.reports) console.log(`      ${report.platform}: ${report.error ? `not reported (${report.error})` : (report.url ?? `reported as ${result.runName}`)}`);
+        const scores = Object.entries(result.summary.scores).map(([key, value]) => `${key} ${value.mean.toFixed(3)}`).join("  ") || "(no scores)";
+        const errored = result.summary.errors ? `  ${result.summary.errors} errored` : "";
+        inv.io.log(`${result.passed ? "pass" : "FAIL"}  ${name}  ${result.rows.length} items  ${scores}${errored}`);
+        for (const failure of result.failures) inv.io.log(`      below threshold: ${failure}`);
+        for (const report of result.reports) inv.io.log(`      ${report.platform}: ${report.error ? `not reported (${report.error})` : (report.url ?? `reported as ${result.runName}`)}`);
         failed ||= !result.passed;
       }
     }
@@ -215,12 +269,51 @@ async function runEvals(files: string[], configPath: string | undefined, profile
   return failed ? 1 : 0;
 }
 
-main(process.argv.slice(2)).then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (error: unknown) => {
-    console.error(`tas: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
-  },
-);
+// ---------------------------------------------------------------------------------------------
+// entry
+// ---------------------------------------------------------------------------------------------
+
+/** `tas <group> <command>`, or `tas <group>` for groups that are a command themselves. */
+const GROUPS: Record<string, Record<string, Command> | Command> = {
+  prompts: promptCommands,
+  datasets: datasetCommands,
+  eval: runEvals,
+};
+
+/** Run the CLI. Returns the exit code: 0 ok, 1 failed or refused, 2 not a valid command. */
+export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<number> {
+  const out: CliIO = { cwd: io.cwd ?? process.cwd(), log: io.log ?? ((line) => console.log(line)), error: io.error ?? ((line) => console.error(line)) };
+  try {
+    const { values, positionals } = parseArgs({
+      args: argv,
+      allowPositionals: true,
+      options: {
+        config: { type: "string" },
+        profile: { type: "string" },
+        label: { type: "string", multiple: true },
+        force: { type: "boolean", default: false },
+        yes: { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+      },
+    });
+    const [groupName, ...rest] = positionals;
+    const group = groupName ? GROUPS[groupName] : undefined;
+    const command = typeof group === "function" ? group : rest[0] ? group?.[rest[0]] : undefined;
+    if (values.help || !command) {
+      out.log(USAGE);
+      return values.help ? 0 : 2;
+    }
+    const { config, target } = await loadConfig(out.cwd, values.config, values.profile);
+    return await command({
+      args: typeof group === "function" ? rest : rest.slice(1),
+      flags: { config: values.config, profile: values.profile, label: values.label, force: values.force, yes: values.yes },
+      io: out,
+      config,
+      target,
+      path: (...parts) => resolve(out.cwd, ...parts),
+    });
+  } catch (error) {
+    out.error(`tas: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
+}
