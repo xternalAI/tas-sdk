@@ -117,3 +117,41 @@ export function conformance(make: () => PromptRegistry, options: ConformanceOpti
     expect((await reg.list()).map((p) => p.name)).toEqual(expect.arrayContaining(cases.map((c) => c.name)));
   });
 }
+
+/** A dataset exercising what stores must preserve: non-object inputs, missing expected values, metadata. */
+export const datasetItems = [
+  { id: "plain", input: "a bare string", expected: 4, metadata: { source: "manual", weight: 2 } },
+  { id: "object", input: { question: "capital of Latvia?", context: ["baltic"] }, expected: { answer: "Riga" } },
+  { id: "no-expected", input: { question: "open ended" } },
+  { id: "list", input: [1, 2, 3], expected: [3, 2, 1] },
+];
+
+/** Every dataset store must pass this: what you push is what you pull, and pushing again updates in place. */
+export function datasetConformance(make: () => import("../src/index.ts").DatasetStore, name = "conformance") {
+  it("round-trips items of every shape, with their ids", async () => {
+    const store = make();
+    await store.push({ name, description: "Round trip", items: datasetItems });
+    const pulled = (await store.pull(name))!;
+    expect(pulled.name).toBe(name);
+    expect(pulled.description).toBe("Round trip");
+    expect([...pulled.items].sort((a, b) => a.id!.localeCompare(b.id!))).toEqual([...datasetItems].sort((a, b) => a.id.localeCompare(b.id)));
+  });
+
+  it("pushing again updates items by id, adds new ones, and leaves the rest", async () => {
+    const store = make();
+    await store.push({ name, items: datasetItems });
+    await store.push({ name, items: [{ id: "plain", input: "a bare string", expected: 5 }, { id: "added", input: { new: true } }] });
+    const byId = new Map((await store.pull(name))!.items.map((item) => [item.id, item]));
+    expect(byId.size).toBe(datasetItems.length + 1);
+    expect(byId.get("plain")!.expected).toBe(5);
+    expect(byId.get("added")).toEqual({ id: "added", input: { new: true } });
+    expect(byId.get("object")).toEqual(datasetItems[1]);
+  });
+
+  it("lists datasets and returns null for one that does not exist", async () => {
+    const store = make();
+    await store.push({ name, items: [datasetItems[0]!] });
+    expect(await store.list()).toContain(name);
+    expect(await store.pull(`${name}-missing`)).toBeNull();
+  });
+}

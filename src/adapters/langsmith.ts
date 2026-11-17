@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import type { Dataset, DatasetItem, DatasetStore } from "../dataset.ts";
 import type { ExperimentReporter } from "../eval.ts";
 import {
   ENVELOPE_KEY,
@@ -446,42 +447,123 @@ export function langsmith(options: LangSmithOptions): PlatformAdapter {
     }),
   };
 
+  // LangSmith requires example inputs and outputs to be objects, and identifies examples by UUID.
+  const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+  const asObject = (value: unknown, key: string) => (isObject(value) ? value : { [key]: value ?? null });
+  /** A UUID derived from the dataset and item id, so the same item is the same example on every push. */
+  const exampleId = (dataset: string, id: string) =>
+    createHash("sha256").update(`${dataset}\n${id}`).digest("hex").slice(0, 32).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+
+  type Example = { id: string; inputs: Record<string, unknown>; outputs?: Record<string, unknown> | null; metadata?: Record<string, unknown> | null; created_at?: string };
+  const findDataset = async (name: string) =>
+    ((await request<{ id: string; name: string; description?: string | null }[]>("GET", `/datasets?name=${encodeURIComponent(name)}`)) ?? []).find((d) => d.name === name);
+  async function listExamples(datasetId: string): Promise<Example[]> {
+    const examples: Example[] = [];
+    for (let offset = 0; ; offset += 100) {
+      const page = (await request<Example[]>("GET", `/examples?dataset=${datasetId}&limit=100&offset=${offset}`)) ?? [];
+      examples.push(...page);
+      if (page.length < 100) return examples;
+    }
+  }
+
+  const datasets: DatasetStore = {
+    async list() {
+      const names: string[] = [];
+      for (let offset = 0; ; offset += 100) {
+        const page = (await request<{ name: string }[]>("GET", `/datasets?limit=100&offset=${offset}`)) ?? [];
+        names.push(...page.map((d) => d.name));
+        if (page.length < 100) return names;
+      }
+    },
+    async pull(name) {
+      const dataset = await findDataset(name);
+      if (!dataset) return null;
+      const examples = (await listExamples(dataset.id)).sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+      const items = examples.map((example): DatasetItem => {
+        // `__tas` remembers the item's own id and which values were wrapped to satisfy LangSmith;
+        // `dataset_split` is added by LangSmith itself. Neither is the user's metadata.
+        const { [ENVELOPE_KEY]: ours, dataset_split: _split, ...metadata } = example.metadata ?? {};
+        const note = (ours ?? {}) as { id?: string; wrapped?: string[] };
+        const unwrap = (value: Record<string, unknown> | null | undefined, key: string) => (value && note.wrapped?.includes(key) ? value[key] : value);
+        const expected = unwrap(example.outputs, "output");
+        return {
+          id: note.id ?? example.id,
+          input: unwrap(example.inputs, "input"),
+          ...(expected !== null && expected !== undefined ? { expected } : {}),
+          ...(Object.keys(metadata).length ? { metadata } : {}),
+        };
+      });
+      return { name, ...(dataset.description ? { description: dataset.description } : {}), items };
+    },
+    async push(dataset: Dataset) {
+      let found = await findDataset(dataset.name);
+      if (!found) {
+        await request("POST", "/datasets", { name: dataset.name, ...(dataset.description ? { description: dataset.description } : {}) });
+        found = await findDataset(dataset.name);
+        if (!found) throw new LangSmithError(`langsmith: dataset "${dataset.name}" could not be created`);
+      }
+      const existing = new Set((await listExamples(found.id)).map((example) => example.id));
+      const examples = dataset.items.map((item) => {
+        const wrapped = [...(isObject(item.input) ? [] : ["input"]), ...(item.expected === undefined || isObject(item.expected) ? [] : ["output"])];
+        return {
+          id: exampleId(dataset.name, item.id!),
+          dataset_id: found!.id,
+          inputs: asObject(item.input, "input"),
+          ...(item.expected === undefined ? {} : { outputs: asObject(item.expected, "output") }),
+          metadata: { ...item.metadata, [ENVELOPE_KEY]: { id: item.id, ...(wrapped.length ? { wrapped } : {}) } },
+        };
+      });
+      // Creating an example that exists does not update it, so new and existing ones take different calls.
+      const fresh = examples.filter((example) => !existing.has(example.id));
+      const known = examples.filter((example) => existing.has(example.id));
+      if (fresh.length) await request("POST", "/examples/bulk", fresh);
+      if (known.length) await request("PATCH", "/examples/bulk", known);
+    },
+  };
+
   const experiments: ExperimentReporter = {
     async report(result) {
-      // LangSmith requires inputs and outputs to be objects, and examples are identified by UUID.
-      const asObject = (value: unknown, key: string) =>
-        typeof value === "object" && value !== null && !Array.isArray(value) ? value : { [key]: value ?? null };
-      const exampleId = (rowId: string) =>
-        createHash("sha256").update(`${result.dataset.name}\n${rowId}`).digest("hex").slice(0, 32).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+      // LangSmith's one-call experiment upload only accepts datasets it created itself, which could then
+      // not be pushed to or edited like any other. So the dataset is an ordinary one, and the experiment
+      // is recorded the way LangSmith's own SDK does it: a session bound to the dataset, one run per row
+      // bound to its example, and feedback for each score.
+      await datasets.push({ ...result.dataset, items: result.rows.map(({ id, input, expected, metadata }) => ({ id, input, expected, ...(metadata ? { metadata } : {}) })) });
+      const dataset = (await findDataset(result.dataset.name))!;
       const iso = (ms: number) => new Date(ms).toISOString();
-      // LangSmith requires experiment start < row start < row end < experiment end, all strictly, which a
-      // fast task does not produce: times recorded in the same millisecond are nudged apart.
-      const rowEnd = (row: { startTime: number; endTime: number }) => Math.max(row.endTime, row.startTime + 1);
-      const experimentStart = Math.min(result.startTime, ...result.rows.map((row) => row.startTime - 1));
-      const experimentEnd = Math.max(result.endTime, ...result.rows.map((row) => rowEnd(row) + 1));
-      // One call creates the dataset if needed, its examples, the experiment and the scores.
-      await request("POST", "/datasets/upload-experiment", {
-        experiment_name: result.runName,
-        dataset_name: result.dataset.name,
-        ...(result.dataset.description ? { dataset_description: result.dataset.description } : {}),
-        experiment_start_time: iso(experimentStart),
-        experiment_end_time: iso(experimentEnd),
-        experiment_metadata: { ...result.metadata, evaluation: result.name },
-        results: result.rows.map((row) => ({
-          row_id: exampleId(row.id),
-          inputs: asObject(row.input, "input"),
-          expected_outputs: asObject(row.expected, "output"),
-          actual_outputs: row.error ? { error: row.error } : asObject(row.output, "output"),
-          evaluation_scores: Object.entries(row.scores).map(([key, s]) => ({ key, score: s.score, ...(s.comment ? { comment: s.comment } : {}) })),
-          start_time: iso(row.startTime),
-          end_time: iso(rowEnd(row)),
-          run_name: result.name,
-          run_metadata: { ...row.metadata, item: row.id },
-        })),
+      const session = await request<{ id: string }>("POST", "/sessions", {
+        name: result.runName,
+        reference_dataset_id: dataset.id,
+        start_time: iso(result.startTime),
+        extra: { metadata: { ...result.metadata, evaluation: result.name } },
       });
+      if (!session) throw new LangSmithError("langsmith: could not create the experiment");
+
+      for (const row of result.rows) {
+        const runId = randomUUID();
+        // LangSmith orders runs by this: the start time to the microsecond, then the run id.
+        const dottedOrder = `${iso(row.startTime).replace(/[-:.]/g, "").replace("Z", "000Z")}${runId}`;
+        await request("POST", "/runs", {
+          id: runId,
+          trace_id: runId,
+          dotted_order: dottedOrder,
+          name: result.name,
+          run_type: "chain",
+          session_id: session.id,
+          reference_example_id: exampleId(result.dataset.name, row.id),
+          inputs: asObject(row.input, "input"),
+          ...(row.error ? { error: row.error } : { outputs: asObject(row.output, "output") }),
+          start_time: iso(row.startTime),
+          end_time: iso(Math.max(row.endTime, row.startTime + 1)), // a run must end after it starts
+          extra: { metadata: { ...row.metadata, item: row.id } },
+        });
+        for (const [key, score] of Object.entries(row.scores)) {
+          await request("POST", "/feedback", { run_id: runId, trace_id: runId, key, score: score.score, ...(score.comment ? { comment: score.comment } : {}) });
+        }
+      }
+      await request("PATCH", `/sessions/${session.id}`, { end_time: iso(Math.max(result.endTime, result.startTime + 1)) });
       return {};
     },
   };
 
-  return { id: "langsmith", prompts, tracing, experiments };
+  return { id: "langsmith", prompts, tracing, datasets, experiments };
 }

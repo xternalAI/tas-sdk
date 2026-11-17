@@ -1,8 +1,6 @@
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { PlatformAdapter } from "./adapter.ts";
+import { itemId, type Dataset, type DatasetItem } from "./dataset.ts";
 import type { RunOptions, RunResult } from "./run.ts";
 import type { SpanHandle, TraceOptions } from "./trace.ts";
 
@@ -11,43 +9,6 @@ import type { SpanHandle, TraceOptions } from "./trace.ts";
  * whichever platform is configured. The task and the scorers always run here, in your process,
  * so results are the same whichever vendor stores them.
  */
-
-export interface DatasetItem<Input = unknown, Expected = unknown> {
-  /** Stable identity across runs. Defaults to a hash of `input`. */
-  id?: string;
-  input: Input;
-  expected?: Expected;
-  metadata?: Record<string, unknown>;
-}
-
-export interface Dataset<Input = unknown, Expected = unknown> {
-  name: string;
-  description?: string;
-  items: DatasetItem<Input, Expected>[];
-}
-
-export const DATASET_EXTENSION = ".dataset.jsonl";
-
-/** Load `<name>.dataset.jsonl`: one JSON object per line with `input`, and optionally `id`, `expected`, `metadata`. */
-export async function loadDataset<Input = unknown, Expected = unknown>(path: string): Promise<Dataset<Input, Expected>> {
-  const lines = (await readFile(path, "utf8")).split("\n");
-  const items: DatasetItem<Input, Expected>[] = [];
-  lines.forEach((line, index) => {
-    if (!line.trim()) return;
-    let item: unknown;
-    try {
-      item = JSON.parse(line);
-    } catch {
-      throw new Error(`${path}:${index + 1}: not valid JSON`);
-    }
-    if (!item || typeof item !== "object" || !("input" in item)) throw new Error(`${path}:${index + 1}: each line needs an "input"`);
-    const unknown = Object.keys(item).filter((k) => !["id", "input", "expected", "metadata"].includes(k));
-    if (unknown.length) throw new Error(`${path}:${index + 1}: unknown key "${unknown[0]}"`);
-    items.push(item as DatasetItem<Input, Expected>);
-  });
-  const file = basename(path);
-  return { name: file.endsWith(DATASET_EXTENSION) ? file.slice(0, -DATASET_EXTENSION.length) : file.replace(/\.[^.]+$/, ""), items };
-}
 
 export interface ScorerArgs<Input = unknown, Output = unknown, Expected = unknown> {
   input: Input;
@@ -163,10 +124,7 @@ export interface EvalHost {
 
 export async function evaluate(host: EvalHost, name: string, options: EvaluateOptions): Promise<ExperimentResult> {
   const dataset: Dataset = Array.isArray(options.data) ? { name, items: options.data } : options.data;
-  const items = dataset.items.map((item) => ({
-    ...item,
-    id: item.id ?? createHash("sha256").update(JSON.stringify(item.input)).digest("hex").slice(0, 16),
-  }));
+  const items = dataset.items.map((item) => ({ ...item, id: itemId(item) }));
   const duplicate = items.find((item, i) => items.findIndex((other) => other.id === item.id) !== i);
   if (duplicate) throw new Error(`dataset "${dataset.name}": two items share the id "${duplicate.id}" (ids default to a hash of the input; give them explicit ids)`);
 

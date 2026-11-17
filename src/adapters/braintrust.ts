@@ -10,6 +10,7 @@ import {
   type PromptRegistry,
   type RemotePrompt,
 } from "../adapter.ts";
+import type { Dataset, DatasetItem, DatasetStore } from "../dataset.ts";
 import type { ExperimentReporter } from "../eval.ts";
 import { commonAttributes, type TraceExporter } from "../trace.ts";
 import { hashPrompt, parsePrompt, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
@@ -371,16 +372,58 @@ export function braintrust(options: BraintrustOptions): PlatformAdapter {
     }),
   };
 
+  /** Create the dataset if needed and upsert its rows by id. Returns Braintrust's id for it. */
+  async function upsertDataset(dataset: Dataset): Promise<string> {
+    // Creating a dataset that exists returns the existing one.
+    const created = await request<{ id: string }>("POST", "/v1/dataset", {
+      body: { project_id: await projectId(), name: dataset.name, ...(dataset.description ? { description: dataset.description } : {}) },
+    });
+    if (dataset.items.length) {
+      await request("POST", `/v1/dataset/${created.id}/insert`, {
+        body: { events: dataset.items.map((item) => ({ id: item.id, input: item.input, expected: item.expected, metadata: item.metadata })) },
+      });
+    }
+    return created.id;
+  }
+
+  const datasets: DatasetStore = {
+    async list() {
+      const found = await request<{ objects: { name: string }[] }>("GET", "/v1/dataset", { query: { project_id: await projectId(), limit: "1000" } });
+      return found.objects.map((d) => d.name);
+    },
+    async pull(name) {
+      const found = await request<{ objects: { id: string; description?: string | null }[] }>("GET", "/v1/dataset", {
+        query: { project_id: await projectId(), dataset_name: name },
+      });
+      const dataset = found.objects[0];
+      if (!dataset) return null;
+      type Row = { id: string; input: unknown; expected?: unknown; metadata?: Record<string, unknown> | null; created?: string };
+      const rows: Row[] = [];
+      for (let cursor: string | undefined; ; ) {
+        const page = await request<{ events: Row[]; cursor?: string | null }>("POST", `/v1/dataset/${dataset.id}/fetch`, { body: { limit: 1000, ...(cursor ? { cursor } : {}) } });
+        rows.push(...page.events);
+        if (!page.cursor || !page.events.length) break;
+        cursor = page.cursor;
+      }
+      // Braintrust returns newest first; oldest first reads better in a file and stays stable as rows are added.
+      rows.sort((a, b) => (a.created ?? "").localeCompare(b.created ?? ""));
+      const items = rows.map((row): DatasetItem => ({
+        id: row.id,
+        input: row.input,
+        ...(row.expected !== null && row.expected !== undefined ? { expected: row.expected } : {}),
+        ...(row.metadata ? { metadata: row.metadata } : {}),
+      }));
+      return { name, ...(dataset.description ? { description: dataset.description } : {}), items };
+    },
+    async push(dataset) {
+      await upsertDataset(dataset);
+    },
+  };
+
   const experiments: ExperimentReporter = {
     async report(result) {
       const project_id = await projectId();
-      // Creating a dataset that exists returns it, and rows are upserted by id, so re-runs do not duplicate.
-      const dataset = await request<{ id: string }>("POST", "/v1/dataset", {
-        body: { project_id, name: result.dataset.name, ...(result.dataset.description ? { description: result.dataset.description } : {}) },
-      });
-      await request("POST", `/v1/dataset/${dataset.id}/insert`, {
-        body: { events: result.rows.map((row) => ({ id: row.id, input: row.input, expected: row.expected, metadata: row.metadata })) },
-      });
+      const dataset = { id: await upsertDataset({ ...result.dataset, items: result.rows.map(({ id, input, expected, metadata }) => ({ id, input, expected, ...(metadata ? { metadata } : {}) })) }) };
       const experiment = await request<{ id: string }>("POST", "/v1/experiment", {
         body: { project_id, name: result.runName, dataset_id: dataset.id, metadata: { ...result.metadata, evaluation: result.name }, ensure_new: true },
       });
@@ -410,5 +453,5 @@ export function braintrust(options: BraintrustOptions): PlatformAdapter {
     },
   };
 
-  return { id: "braintrust", prompts, tracing, experiments };
+  return { id: "braintrust", prompts, tracing, datasets, experiments };
 }

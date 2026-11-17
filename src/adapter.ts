@@ -1,4 +1,5 @@
 import { ARCHIVED_TAG, hashPrompt, type PromptDefinition, type PromptRef } from "./prompt/model.ts";
+import type { DatasetStore } from "./dataset.ts";
 import type { ExperimentReporter } from "./eval.ts";
 import type { TraceExporter } from "./trace.ts";
 
@@ -64,6 +65,8 @@ export interface PlatformAdapter {
   prompts?: PromptRegistry;
   /** Where and how this platform takes traces. */
   tracing?: TraceExporter;
+  /** Reads and writes evaluation datasets. */
+  datasets?: DatasetStore;
   /** Stores a finished evaluation run as an experiment, creating or updating its dataset as needed. */
   experiments?: ExperimentReporter;
 }

@@ -9,6 +9,7 @@ import {
   type RemotePrompt,
 } from "../adapter.ts";
 import { randomBytes } from "node:crypto";
+import type { Dataset, DatasetItem, DatasetStore } from "../dataset.ts";
 import type { ExperimentReporter } from "../eval.ts";
 import { asText, commonAttributes, toOtlp, type SpanRecord, type TraceExporter } from "../trace.ts";
 import { hashPrompt, parsePrompt, PROMPT_NAME, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
@@ -292,19 +293,64 @@ export function langfuse(options: LangfuseOptions): PlatformAdapter {
     }),
   };
 
+  const post = async <T>(path: string, body: unknown): Promise<T> => {
+    const answer = await request<T>("POST", path, { body });
+    if (!answer) throw new LangfuseError(`langfuse POST ${path} returned 404`);
+    return answer;
+  };
+  /** Langfuse item ids are unique across a whole project, so ours are prefixed with the dataset's name. */
+  const remoteItemId = (dataset: string, id: string) => `${dataset}--${id}`;
+
+  /** Create the dataset if needed and upsert its items by id. Returns Langfuse's id for it. */
+  async function upsertDataset(dataset: Dataset): Promise<string> {
+    // Creating a dataset that exists returns the existing one.
+    const created = await post<{ id: string }>("/v2/datasets", { name: dataset.name, ...(dataset.description ? { description: dataset.description } : {}) });
+    for (const item of dataset.items) {
+      await post("/dataset-items", { datasetName: dataset.name, id: remoteItemId(dataset.name, item.id!), input: item.input, expectedOutput: item.expected, metadata: item.metadata });
+    }
+    return created.id;
+  }
+
+  const datasets: DatasetStore = {
+    async list() {
+      const names: string[] = [];
+      for (let page = 1; ; page++) {
+        const result = await request<{ data: { name: string }[]; meta: { totalPages: number } }>("GET", "/v2/datasets", { query: { page: String(page), limit: "100" } });
+        names.push(...(result?.data ?? []).map((d) => d.name));
+        if (!result || page >= result.meta.totalPages) return names;
+      }
+    },
+    async pull(name) {
+      const dataset = await request<{ description?: string | null }>("GET", `/v2/datasets/${encodeURIComponent(name)}`);
+      if (!dataset) return null;
+      type Row = { id: string; input: unknown; expectedOutput?: unknown; metadata?: Record<string, unknown> | null; status?: string; createdAt?: string };
+      const rows: Row[] = [];
+      for (let page = 1; ; page++) {
+        const result = await request<{ data: Row[]; meta: { totalPages: number } }>("GET", "/dataset-items", { query: { datasetName: name, page: String(page), limit: "100" } });
+        rows.push(...(result?.data ?? []));
+        if (!result || page >= result.meta.totalPages) break;
+      }
+      const prefix = remoteItemId(name, "");
+      const items = rows
+        .filter((row) => row.status !== "ARCHIVED") // archived in the Langfuse UI: no longer part of the dataset
+        .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""))
+        .map((row): DatasetItem => ({
+          id: row.id.startsWith(prefix) ? row.id.slice(prefix.length) : row.id,
+          input: row.input,
+          ...(row.expectedOutput !== null && row.expectedOutput !== undefined ? { expected: row.expectedOutput } : {}),
+          ...(row.metadata ? { metadata: row.metadata } : {}),
+        }));
+      return { name, ...(dataset.description ? { description: dataset.description } : {}), items };
+    },
+    async push(dataset) {
+      await upsertDataset(dataset);
+    },
+  };
+
   const experiments: ExperimentReporter = {
     async report(result) {
-      const post = async <T>(path: string, body: unknown): Promise<T> => {
-        const answer = await request<T>("POST", path, { body });
-        if (!answer) throw new LangfuseError(`langfuse POST ${path} returned 404`);
-        return answer;
-      };
-      // Creating a dataset that exists returns it; items are upserted by id.
-      const dataset = await post<{ id: string }>("/v2/datasets", { name: result.dataset.name, ...(result.dataset.description ? { description: result.dataset.description } : {}) });
-      const itemId = (rowId: string) => `${result.dataset.name}--${rowId}`;
-      for (const row of result.rows) {
-        await post("/dataset-items", { datasetName: result.dataset.name, id: itemId(row.id), input: row.input, expectedOutput: row.expected, metadata: row.metadata });
-      }
+      const dataset = { id: await upsertDataset({ ...result.dataset, items: result.rows.map(({ id, input, expected, metadata }) => ({ id, input, expected, ...(metadata ? { metadata } : {}) })) }) };
+      const itemId = (rowId: string) => remoteItemId(result.dataset.name, rowId);
 
       // Langfuse has no "create experiment" call: a run exists as one trace per item carrying these attributes.
       const experimentId = randomBytes(8).toString("hex");
@@ -355,5 +401,5 @@ export function langfuse(options: LangfuseOptions): PlatformAdapter {
     },
   };
 
-  return { id: "langfuse", prompts, tracing, experiments };
+  return { id: "langfuse", prompts, tracing, datasets, experiments };
 }
