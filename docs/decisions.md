@@ -212,6 +212,8 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
 
 ## Development process
 
+- **Unit-test coverage has a floor that fails the build**: 96% of statements, 98% of lines, 95% of functions, 89% of branches (`pnpm coverage`). Measured on 2026-11-17: 97.0 / 99.1 / 95.9 / 90.1. Only offline tests count; the live suites add nothing to it.
+- **The CLI is a function, `runCli(argv, io)`**, with `bin.ts` as a one-line executable around it, so commands are tested in-process and count towards coverage.
 - **Live tests are opt-in:** `pnpm test:live`, with credentials in `.env`. Plain `pnpm test` never touches a vendor.
 - **The live invocation test needs any OpenAI-compatible endpoint** (`TAS_LIVE_GATEWAY_URL`, `TAS_LIVE_GATEWAY_MODEL`); a local Ollama is enough and costs nothing. It asserts on what the SDK did, not on the model's wording.
 - **Live tests leave prompts behind** under a `tas-live-<timestamp>/` prefix. `pnpm cleanup:live` removes them and is run on request, not automatically.

@@ -8,6 +8,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
+import { cli, SDK } from "./cli.ts";
 import { createClient, generatePromptTypes, jsonSchemaToType, memory, writePrompt, type PromptDefinition, type TemplateValue } from "../src/index.ts";
 
 const prompts: PromptDefinition[] = [
@@ -163,10 +164,10 @@ describe("generated types against the compiler", () => {
   it("tas prompts types writes prompts.ts from the prompt files", async () => {
     const dir = await mkdtemp(join(resolve("test"), ".types-cli-"));
     try {
-      await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${JSON.stringify(resolve("src/index.ts"))};\nexport default defineConfig({ platform: memory(), promptsDir: "p" });\n`);
+      await writeFile(join(dir, "tas.config.ts"), `import { defineConfig, memory } from ${SDK};\nexport default defineConfig({ platform: memory(), promptsDir: "p" });\n`);
       for (const prompt of prompts) await writePrompt(join(dir, "p"), prompt);
-      const { stdout } = await promisify(execFile)(process.execPath, [resolve("src/cli.ts"), "prompts", "types"], { cwd: dir });
-      expect(stdout).toMatch(/wrote .*p\/prompts\.ts \(3 prompts\)/);
+      const { code, out } = await cli(["prompts", "types"], dir);
+      expect([code, out]).toEqual([0, expect.stringMatching(/wrote .*p\/prompts\.ts \(3 prompts\)/)]);
       expect(await readFile(join(dir, "p", "prompts.ts"), "utf8")).toBe(generatePromptTypes(prompts));
     } finally {
       await rm(dir, { recursive: true, force: true });

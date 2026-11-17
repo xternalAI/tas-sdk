@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadPrompts,
@@ -19,6 +17,7 @@ import {
   type PromptDefinition,
   type PromptRegistry,
 } from "../src/index.ts";
+import { cli, SDK } from "./cli.ts";
 import { fixtures } from "./conformance.ts";
 
 let dir: string;
@@ -191,17 +190,12 @@ describe("sync", () => {
 });
 
 describe("cli", () => {
-  const run = (args: string[]) =>
-    promisify(execFile)(process.execPath, [resolve("src/cli.ts"), ...args], { cwd: dir }).then(
-      (r) => ({ code: 0, out: r.stdout + r.stderr }),
-      (e: { code: number; stdout: string; stderr: string }) => ({ code: e.code, out: e.stdout + e.stderr }),
-    );
+  const run = (args: string[]) => cli(args, dir);
 
   it("loads a TypeScript config, reports status and pushes", async () => {
-    const index = resolve("src/index.ts");
     await writeFile(
       join(dir, "tas.config.ts"),
-      `import { defineConfig, memory } from ${JSON.stringify(index)};\n` +
+      `import { defineConfig, memory } from ${SDK};\n` +
         `export default defineConfig({ profiles: { acme: { platform: memory(), promptsDir: "p" } }, default: "acme" });\n`,
     );
     await writePrompt(join(dir, "p"), greet);
