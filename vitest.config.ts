@@ -2,6 +2,8 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // Only this checkout's tests: agent worktrees under .claude/ hold copies of the whole repo.
+    include: ["test/**/*.test.ts"],
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
