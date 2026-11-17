@@ -150,6 +150,7 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
   - *Pull:* the platform's version of an item wins; the file keeps its order; new items are appended; rows only the file has are kept. Pull never deletes a row from your file.
   - *Push:* items are upserted by id. A row removed from the file stays on the platform. Push never deletes there.
   - An id that is only the hash of the input is not written to the file.
+  - *Caveat:* Braintrust can take a second or two to show dataset rows that were just written (seen live: a pull straight after a push sometimes missed the newest row). A pull that looks short right after a push is worth repeating.
   - *Caveat:* because nothing is ever deleted by sync, removing an item everywhere means deleting it in the vendor UI and in the file.
 - **Item ids default to a hash of the input**, so the same item is recognised across runs and platforms upsert instead of duplicating (verified live on all three). Two items with the same input need explicit ids.
 - **Every run gets a unique name** (`<name>-<timestamp>`), so a re-run never overwrites an earlier experiment.

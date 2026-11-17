@@ -12,6 +12,6 @@ const targets = liveTargets();
 describe.skipIf(!LIVE || targets.length === 0)("dataset stores (live)", { timeout: 120_000 }, () => {
   for (const target of targets) {
     // A fresh dataset per test: these platforms keep what earlier tests wrote.
-    describe(target.id, () => datasetConformance(() => target.datasets!, `tas-live-${Date.now()}-${target.id}`));
+    describe(target.id, () => datasetConformance(() => target.datasets!, `tas-live-${Date.now()}-${target.id}`, 20_000));
   }
 });
