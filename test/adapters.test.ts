@@ -12,8 +12,8 @@ describe("braintrust adapter (against a fake server)", () => {
   it("writes native Braintrust fields so the prompt is usable in the Braintrust UI", async () => {
     const fake = fakeBraintrust();
     await make(fake).push(fixtures[0]!);
-    const row = fake.versions.get("support--triage")![0] as any;
-    expect(row.name).toBe("support/triage");
+    const row = fake.versions.get("support/triage")![0] as any;
+    expect([row.slug, row.name]).toEqual(["support/triage", "support/triage"]); // names with "/" are stored as they are
     expect(row.prompt_data.template_format).toBe("mustache");
     expect(row.prompt_data.options.model).toBe("gpt-5");
     expect(row.prompt_data.options.params.response_format.json_schema.name).toBe("triage");
@@ -27,7 +27,7 @@ describe("braintrust adapter (against a fake server)", () => {
     const fake = fakeBraintrust();
     const reg = make(fake);
     await reg.push(fixtures[0]!);
-    const row = fake.versions.get("support--triage")![0] as any;
+    const row = fake.versions.get("support/triage")![0] as any;
     row.prompt_data.prompt.messages[0].content = "Edited in the UI";
     const got = (await reg.get({ name: "support/triage" }))!.definition as Extract<PromptDefinition, { type: "chat" }>;
     expect(got.messages).toEqual([
@@ -40,7 +40,7 @@ describe("braintrust adapter (against a fake server)", () => {
     const fake = fakeBraintrust();
     const reg = make(fake);
     await reg.push(fixtures[0]!);
-    const row = fake.versions.get("support--triage")![0] as any;
+    const row = fake.versions.get("support/triage")![0] as any;
     expect(row.prompt_data.options.params.temperature).toBeUndefined();
     expect((await reg.get({ name: "support/triage" }))!.definition.model).toEqual(fixtures[0]!.model);
 
@@ -117,7 +117,7 @@ describe("langfuse adapter (against a fake server)", () => {
     expect(row.config).toMatchObject({ model: "gpt-5", temperature: 0, max_tokens: 400 });
     expect(row.config.tools[0].function.name).toBe("lookup_order");
     expect(row.config.response_format.json_schema.name).toBe("triage");
-    expect(row.config.__tas.fields).toEqual({ description: "Routes a ticket", metadata: { owner: "cx-team" } });
+    expect(row.config.__tas.fields).toEqual({ description: "Routes a ticket", metadata: { owner: "cx-team" }, tags: ["support"] });
     expect(row.tags).toEqual(["support"]);
   });
 

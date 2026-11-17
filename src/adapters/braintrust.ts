@@ -61,8 +61,8 @@ type Body = Pick<Row, "name" | "slug" | "prompt_data"> & {
 
 const NAME = /^[a-z0-9][a-z0-9_-]*(\/[a-z0-9][a-z0-9_-]*)*$/;
 
-/** Braintrust slugs are flat; the canonical name is kept verbatim in the row's `name`. */
-const toSlug = (name: string) => name.replaceAll("/", "--");
+/** Braintrust slugs accept "/" (verified live), so a prompt's slug is its name. */
+const toSlug = (name: string) => name;
 
 /** Detects edits made in the Braintrust UI after our push, which make the envelope's emulated fields stale. */
 function fingerprint(prompt: unknown): string {
@@ -125,9 +125,10 @@ function encode(def: PromptDefinition): { body: Body; needsEnvelope: boolean } {
 }
 
 function decode(row: Pick<Row, "name" | "slug" | "description" | "tags" | "metadata" | "prompt_data">): PromptDefinition {
-  const name = NAME.test(row.name) ? row.name : row.slug;
+  // The slug is the identity. A prompt made in the Braintrust UI can have any display name.
+  const name = row.slug;
   const fail = (why: string) => new BraintrustError(`braintrust prompt "${row.slug}" is not portable: ${why}`);
-  if (!NAME.test(name)) throw fail(`neither name "${row.name}" nor slug is a valid prompt name`);
+  if (!NAME.test(name)) throw fail(`its slug is not lowercase path segments`);
 
   const prompt = row.prompt_data?.prompt as
     | { type?: string; messages?: { role: string; content: unknown }[]; tools?: string | null; content?: string }
@@ -245,9 +246,7 @@ export function braintrust(options: BraintrustOptions): PlatformAdapter {
       if (selector.environment && error instanceof BraintrustError && error.status === 404) return undefined;
       throw error;
     }
-    const row = found.objects[0];
-    // "a/b" and "a--b" share a slug; the stored name tells them apart.
-    return row && (!NAME.test(row.name) || row.name === name) ? row : undefined;
+    return found.objects[0];
   };
 
   /** Environment assignments live outside the prompt row (and outside the published OpenAPI spec). */
@@ -276,7 +275,7 @@ export function braintrust(options: BraintrustOptions): PlatformAdapter {
       tags: "native",
       metadata: "native",
       description: "native",
-      nestedNames: "emulated",
+      nestedNames: "native",
       archived: "emulated",
     },
 
@@ -295,9 +294,7 @@ export function braintrust(options: BraintrustOptions): PlatformAdapter {
         const page = await request<{ objects: Row[] }>("GET", "/v1/prompt", {
           query: { project_id: await projectId(), limit: "100", starting_after: after },
         });
-        const named = page.objects
-          .map((row) => ({ row, name: NAME.test(row.name) ? row.name : row.slug }))
-          .filter(({ name }) => NAME.test(name));
+        const named = page.objects.map((row) => ({ row, name: row.slug })).filter(({ name }) => NAME.test(name));
         const labels = await Promise.all(named.map(({ row }) => assignments(row.id)));
         named.forEach(({ name }, i) => out.push({ name, labels: labels[i]!.map((a) => a.environment_slug) }));
         after = page.objects.at(-1)?.id;

@@ -60,6 +60,8 @@ function report(results: SyncResult[]): number {
             ? "  (deleted here, still on the platform; `tas prompts delete` removes it there)"
             : r.reason === "deleted-remotely"
               ? "  (deleted on the platform; use --force to act anyway)"
+              : r.reason === "unreadable"
+                ? `  (cannot be read from the platform: ${r.error})`
               : r.overwrote
                 ? `  (overwrote ${r.overwrote} change)`
                 : "";
@@ -106,6 +108,7 @@ async function main(argv: string[]): Promise<number> {
     for (const e of entries) {
       console.log(`${e.state.padEnd(15)} ${e.name}`);
       if (e.nonPortable) console.log(`                not portable: ${e.nonPortable.join("  ")}`);
+      if (e.error) console.log(`                ${e.error}`);
     }
     if (!entries.length) console.log("no prompts");
     return 0;

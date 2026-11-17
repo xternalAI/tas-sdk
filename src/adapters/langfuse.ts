@@ -83,7 +83,7 @@ function encode(def: PromptDefinition): Body {
         }
       : {}),
     // Description and metadata have no native field on a Langfuse prompt.
-    [ENVELOPE_KEY]: packEnvelope(envelopeSource as PromptDefinition, ["description", "metadata", "archived"]),
+    [ENVELOPE_KEY]: packEnvelope(envelopeSource as PromptDefinition, ["description", "metadata", "archived", "tags"]),
   };
   return {
     name: def.name,
@@ -97,7 +97,7 @@ function encode(def: PromptDefinition): Body {
   };
 }
 
-function decode(row: Pick<Row, "name" | "type" | "prompt" | "config" | "tags">): PromptDefinition {
+function decode(row: Pick<Row, "name" | "type" | "prompt" | "config" | "tags" | "labels">): PromptDefinition {
   const fail = (why: string) => new LangfuseError(`langfuse prompt "${row.name}" is not portable: ${why}`);
   if (!PROMPT_NAME.test(row.name)) throw fail("its name is not lowercase path segments");
 
@@ -116,7 +116,10 @@ function decode(row: Pick<Row, "name" | "type" | "prompt" | "config" | "tags">):
     ...(typeof model !== "string" && hasRest ? { [ORPHAN_CONFIG]: rest } : {}),
   };
 
-  const tags = tagsWithoutArchiveMarker(row.tags, envelope?.fields.archived);
+  // Langfuse keeps one tag list per prompt, shared by every version. The newest version reads that list,
+  // so a tag edited in the Langfuse UI is seen; older versions read the copy saved with them.
+  const isNewest = !row.labels || row.labels.includes(LATEST);
+  const tags = isNewest || !envelope ? tagsWithoutArchiveMarker(row.tags, envelope?.fields.archived) : (envelope.fields.tags ?? []);
   const common = {
     name: row.name,
     ...(envelope?.fields.description ? { description: envelope.fields.description } : {}),
