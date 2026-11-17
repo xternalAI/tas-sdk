@@ -37,6 +37,8 @@ platform detail lives in [platform-mapping.md](platform-mapping.md).
 
 - **Prompt files have a JSON Schema for editors.** `tas prompts schema` writes `prompt.schema.json` into the prompts directory; files written by the SDK start with a `# yaml-language-server: $schema=...` comment pointing at it, so they validate and autocomplete with no editor setup. Every field has a description, which is the hover text. *Caveat:* files written by hand need that first line added, or an editor mapping such as VS Code's `yaml.schemas`. The schema is draft-07, generated from the same TypeBox definitions the SDK validates with, so the two cannot drift.
 
+- **Typed prompts are opt-in.** `tas prompts types` writes `prompts.ts` into the prompts directory: an interface listing each prompt's variables (nested paths become nested objects), placeholders and output type (from its JSON Schema). `createClient<Prompts>()` then makes a wrong prompt name, a missing variable or a wrong placeholder a compile error, and types `result.output`. Without the type parameter nothing changes. *Caveats:* it is a generated file that must be re-run when prompts change; variable values are typed as "anything but undefined", since a variable has no declared type; output types cover common JSON Schema (objects, arrays, enums, unions) and fall back to `unknown`. Types describe the files in the repo, so with platform-canonical prompts they can lag behind what the platform serves.
+
 ## Templates and variables
 
 - **Portable subset only:** `{{name}}` and `{{nested.path}}`. `{{{name}}}` and `{{&name}}` are accepted as the same thing, since nothing is HTML-escaped.

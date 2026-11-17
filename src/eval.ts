@@ -80,7 +80,7 @@ const asVariable = (value: unknown) => (typeof value === "string" ? value : JSON
  * and expects JSON `{ "score": 0..1, "reason": "..." }` back. The judge prompt is an ordinary
  * prompt, so it is versioned, synced and traced like any other.
  */
-export function judge(client: { run(name: string, options?: RunOptions<any>): Promise<RunResult<any>> }, prompt: string, options: Omit<RunOptions, "output" | "variables"> = {}): Scorer {
+export function judge(client: { run(name: any, options?: any): Promise<RunResult<any>> }, prompt: string, options: Omit<RunOptions, "output" | "variables"> = {}): Scorer {
   return async ({ input, output, expected }) => {
     const result = await client.run(prompt, { ...options, variables: { input: asVariable(input), output: asVariable(output), expected: asVariable(expected) }, output: JUDGE_SCHEMA });
     const verdict = result.output as { score: number; reason?: string };
