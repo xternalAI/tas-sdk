@@ -7,6 +7,12 @@ export interface GatewayConfig {
   baseURL: string;
   apiKey?: string;
   headers?: Record<string, string>;
+  /**
+   * Model ids differ between gateways ("gpt-5" here, "openai/gpt-5" there). Map the ids used in
+   * your prompts to what this gateway expects, so switching gateway never means editing prompts.
+   */
+  models?: Record<string, string>;
+  fetch?: typeof fetch;
 }
 
 export interface TasConfig {

@@ -3,6 +3,8 @@ import type { TasConfig } from "./config.ts";
 import { createMasker, type Masker } from "./masking.ts";
 import { hashPrompt, parsePrompt, type PromptDefinition, type ResolvedPrompt } from "./prompt/model.ts";
 import { renderPrompt, type RenderedMessage, type RenderInput } from "./prompt/template.ts";
+import { chat, run, type ChatSession, type RunOptions, type RunResult } from "./run.ts";
+import type { InferSchema, SchemaInput } from "./schema.ts";
 
 export class PromptNotFoundError extends Error {}
 export class PromptArchivedError extends Error {}
@@ -26,6 +28,16 @@ export interface TasClient {
       options?: GetPromptOptions,
     ): Promise<{ messages: RenderedMessage[]; prompt: ResolvedPrompt }>;
   };
+  /**
+   * Fetch a prompt, render it and call the configured gateway with the prompt's model, settings,
+   * tools and output schema. Pass functions in `tools` to have tool calls executed and looped.
+   */
+  run<S extends SchemaInput | undefined = undefined>(
+    name: string,
+    options?: RunOptions<S> & GetPromptOptions,
+  ): Promise<RunResult<S extends SchemaInput ? InferSchema<S> : unknown>>;
+  /** Start a multi-turn conversation from a prompt. */
+  chat(name: string, options?: RunOptions & GetPromptOptions): ChatSession;
   /** Flush and release anything this client holds. Called by the pool on eviction. */
   close(): Promise<void>;
 }
@@ -110,6 +122,12 @@ export function createClient(config: TasConfig): TasClient {
         const prompt = await get(name, options);
         return { messages: renderPrompt(prompt.definition, input), prompt };
       },
+    },
+    async run(name, options = {}) {
+      return run(config.gateway, await get(name, options), options) as never;
+    },
+    chat(name, options = {}) {
+      return chat(config.gateway, () => get(name, options), options);
     },
     async close() {
       cache.clear();
