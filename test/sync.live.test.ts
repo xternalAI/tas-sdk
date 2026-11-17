@@ -2,27 +2,18 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { braintrust, langfuse, langsmith, loadPrompts, sync, writePrompt, type PlatformAdapter } from "../src/index.ts";
+import { loadPrompts, sync, writePrompt } from "../src/index.ts";
 import { fixtures } from "./conformance.ts";
+import { LIVE, liveTargets } from "./live.ts";
 
 /**
  * The full file -> platform -> file journey against the real services: push a folder of prompts
  * with nested names, pull them into an empty folder, and expect identical files. Opt-in via
  * `pnpm test:live`. Prompts are written under "tas-live-<timestamp>/" and deleted afterwards.
  */
-try {
-  process.loadEnvFile();
-} catch {
-  // no .env file
-}
-const e = process.env;
-const targets: PlatformAdapter[] = [
-  ...(e.BRAINTRUST_API_KEY && e.TAS_LIVE_PROJECT ? [braintrust({ apiKey: e.BRAINTRUST_API_KEY, projectName: e.TAS_LIVE_PROJECT })] : []),
-  ...(e.LANGFUSE_PUBLIC_KEY && e.LANGFUSE_SECRET_KEY ? [langfuse({ publicKey: e.LANGFUSE_PUBLIC_KEY, secretKey: e.LANGFUSE_SECRET_KEY, ...(e.LANGFUSE_BASE_URL ? { baseURL: e.LANGFUSE_BASE_URL } : {}) })] : []),
-  ...(e.LANGSMITH_API_KEY ? [langsmith({ apiKey: e.LANGSMITH_API_KEY, ...(e.LANGSMITH_BASE_URL ? { baseURL: e.LANGSMITH_BASE_URL } : {}) })] : []),
-];
+const targets = liveTargets();
 
-describe.skipIf(e.TAS_LIVE !== "1" || targets.length === 0)("sync round trip (live)", { timeout: 180_000 }, () => {
+describe.skipIf(!LIVE || targets.length === 0)("sync round trip (live)", { timeout: 180_000 }, () => {
   it.each(targets.map((t) => [t.id, t] as const))("%s: push a folder, pull it into an empty one, get the same prompts", async (_id, target) => {
     const prefix = `tas-live-${Date.now()}/sync`;
     const prompts = fixtures.map((f) => ({ ...f, name: `${prefix}/${f.name}` }));
