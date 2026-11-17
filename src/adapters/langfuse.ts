@@ -8,7 +8,9 @@ import {
   type PromptRegistry,
   type RemotePrompt,
 } from "../adapter.ts";
-import { asText, commonAttributes, type TraceExporter } from "../trace.ts";
+import { randomBytes } from "node:crypto";
+import type { ExperimentReporter } from "../eval.ts";
+import { asText, commonAttributes, toOtlp, type SpanRecord, type TraceExporter } from "../trace.ts";
 import { hashPrompt, parsePrompt, PROMPT_NAME, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
 
 export interface LangfuseOptions {
@@ -287,5 +289,68 @@ export function langfuse(options: LangfuseOptions): PlatformAdapter {
     }),
   };
 
-  return { id: "langfuse", prompts, tracing };
+  const experiments: ExperimentReporter = {
+    async report(result) {
+      const post = async <T>(path: string, body: unknown): Promise<T> => {
+        const answer = await request<T>("POST", path, { body });
+        if (!answer) throw new LangfuseError(`langfuse POST ${path} returned 404`);
+        return answer;
+      };
+      // Creating a dataset that exists returns it; items are upserted by id.
+      const dataset = await post<{ id: string }>("/v2/datasets", { name: result.dataset.name, ...(result.dataset.description ? { description: result.dataset.description } : {}) });
+      const itemId = (rowId: string) => `${result.dataset.name}--${rowId}`;
+      for (const row of result.rows) {
+        await post("/dataset-items", { datasetName: result.dataset.name, id: itemId(row.id), input: row.input, expectedOutput: row.expected, metadata: row.metadata });
+      }
+
+      // Langfuse has no "create experiment" call: a run exists as one trace per item carrying these attributes.
+      const experimentId = randomBytes(8).toString("hex");
+      const spans: SpanRecord[] = result.rows.map((row) => ({
+        traceId: randomBytes(16).toString("hex"),
+        spanId: randomBytes(8).toString("hex"),
+        name: result.runName,
+        kind: "span",
+        startTime: row.startTime,
+        endTime: row.endTime,
+        input: row.input,
+        ...(row.output !== undefined ? { output: row.output } : {}),
+        metadata: { rowId: row.id },
+        ...(row.error ? { error: row.error } : {}),
+      }));
+      const byRow = new Map(result.rows.map((row, i) => [spans[i]!.spanId, row]));
+      const body = toOtlp(spans, (span) => {
+        const row = byRow.get(span.spanId)!;
+        return {
+          ...tracing.attributes(span),
+          "langfuse.experiment.id": experimentId,
+          "langfuse.experiment.name": result.runName,
+          "langfuse.experiment.dataset.id": dataset.id,
+          "langfuse.experiment.item.id": itemId(row.id),
+          "langfuse.experiment.item.root_observation_id": span.spanId,
+          ...(row.expected !== undefined ? { "langfuse.experiment.item.expected_output": JSON.stringify(row.expected) } : {}),
+          ...Object.fromEntries(Object.entries({ ...result.metadata, evaluation: result.name }).map(([k, v]) => [`langfuse.experiment.metadata.${k}`, asText(v)])),
+        };
+      });
+      const sent = await doFetch(tracing.url, { method: "POST", headers: { "content-type": "application/json", ...tracing.headers }, body: JSON.stringify(body) });
+      if (!sent.ok) throw new LangfuseError(`langfuse experiment traces rejected: ${sent.status} ${(await sent.text()).slice(0, 200)}`, sent.status);
+
+      for (const span of spans) {
+        const row = byRow.get(span.spanId)!;
+        for (const [name, s] of Object.entries(row.scores)) {
+          await post("/scores", {
+            id: `${experimentId}-${row.id}-${name}`,
+            traceId: span.traceId,
+            observationId: span.spanId,
+            name,
+            value: s.score,
+            dataType: "NUMERIC",
+            ...(s.comment ? { comment: s.comment } : {}),
+          });
+        }
+      }
+      return {};
+    },
+  };
+
+  return { id: "langfuse", prompts, tracing, experiments };
 }

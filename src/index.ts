@@ -1,6 +1,7 @@
 export * from "./adapter.ts";
 export * from "./client.ts";
 export * from "./config.ts";
+export * from "./eval.ts";
 export * from "./masking.ts";
 export * from "./prompt/model.ts";
 export * from "./prompt/template.ts";

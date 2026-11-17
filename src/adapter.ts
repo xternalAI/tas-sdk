@@ -1,4 +1,5 @@
 import { ARCHIVED_TAG, hashPrompt, type PromptDefinition, type PromptRef } from "./prompt/model.ts";
+import type { ExperimentReporter } from "./eval.ts";
 import type { TraceExporter } from "./trace.ts";
 
 /**
@@ -63,7 +64,8 @@ export interface PlatformAdapter {
   prompts?: PromptRegistry;
   /** Where and how this platform takes traces. */
   tracing?: TraceExporter;
-  // the evals contract lands with its phase.
+  /** Stores a finished evaluation run as an experiment, creating or updating its dataset as needed. */
+  experiments?: ExperimentReporter;
 }
 
 /** Tags to store natively: the user's, plus the marker that makes an archived prompt filterable in the vendor UI. */

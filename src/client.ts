@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { TasConfig } from "./config.ts";
+import { evaluate, type EvaluateOptions, type ExperimentResult } from "./eval.ts";
 import { createMasker, type Masker } from "./masking.ts";
 import { hashPrompt, parsePrompt, type PromptDefinition, type ResolvedPrompt } from "./prompt/model.ts";
 import { renderPrompt, type RenderedMessage, type RenderInput } from "./prompt/template.ts";
@@ -45,6 +46,11 @@ export interface TasClient {
    */
   trace<T>(name: string, fn: (span: SpanHandle) => T | Promise<T>): Promise<T>;
   trace<T>(name: string, options: TraceOptions, fn: (span: SpanHandle) => T | Promise<T>): Promise<T>;
+  /**
+   * Run `task` over a dataset, score each output, and report the run as an experiment to the
+   * platform. The results are returned whether or not reporting succeeds.
+   */
+  evaluate<Input = any, Output = any, Expected = any>(name: string, options: EvaluateOptions<Input, Output, Expected>): Promise<ExperimentResult>;
   /** Send any spans still waiting. Call before a short-lived process (script, serverless handler) exits. */
   flush(): Promise<void>;
   /** Flush and release anything this client holds. Called by the pool on eviction. */
@@ -148,6 +154,7 @@ export function createClient(config: TasConfig): TasClient {
       const [options, fn] = typeof optionsOrFn === "function" ? [{}, optionsOrFn] : [optionsOrFn, maybeFn!];
       return tracer.span(name, options, fn);
     },
+    evaluate: (name, options) => evaluate({ platform: config.platform, trace: (n, o, fn) => tracer.span(n, o, fn) }, name, options),
     flush: () => tracer.flush(),
     async close() {
       cache.clear();

@@ -1,7 +1,8 @@
 /**
- * Dev-only: deletes what the live conformance tests and ad-hoc probes leave behind.
+ * Dev-only: deletes what the live tests and ad-hoc probes leave behind: prompts, datasets and
+ * experiments. Traces are not removed, except LangSmith's "tas-live" tracing project.
  *
- *   pnpm cleanup:live            delete test prompts (names starting "tas-live-" or "probe-")
+ *   pnpm cleanup:live            delete test items (names starting "tas-live" or "probe-")
  *   pnpm cleanup:live --dry-run  list them without deleting
  *
  * Each platform is cleaned only if its credentials are in the environment or .env.
@@ -16,7 +17,7 @@ try {
 }
 const env = process.env;
 const dryRun = process.argv.includes("--dry-run");
-const isOurs = (name: string) => ["tas-live-", "probe-"].some((p) => name.startsWith(p));
+const isOurs = (name: string) => name === "tas-live" || ["tas-live-", "probe-"].some((p) => name.startsWith(p));
 const verb = dryRun ? "would delete" : "deleted";
 
 async function call<T>(method: string, url: string, authorization: string): Promise<T> {
@@ -33,6 +34,14 @@ async function braintrust(apiKey: string, projectName: string): Promise<number> 
   const projectId = projects.objects[0]?.id;
   if (!projectId) throw new Error(`braintrust project "${projectName}" not found`);
   let count = 0;
+  for (const kind of ["experiment", "dataset"]) {
+    const listed = await call<{ objects: { id: string; name: string }[] }>("GET", `${base}/v1/${kind}?project_id=${projectId}&limit=1000`, auth);
+    for (const row of listed.objects.filter((r) => isOurs(r.name))) {
+      if (!dryRun) await call("DELETE", `${base}/v1/${kind}/${row.id}`, auth);
+      console.log(`braintrust: ${verb} ${kind} ${row.name}`);
+      count++;
+    }
+  }
   for (const kind of ["prompt", "function"]) {
     const seen = new Set<string>();
     let after: string | undefined;
@@ -70,7 +79,25 @@ async function langfuse(publicKey: string, secretKey: string, baseURL: string): 
     if (!dryRun) await call("DELETE", `${base}/${encodeURIComponent(name)}`, auth);
     console.log(`langfuse: ${verb} prompt ${name}`);
   }
-  return names.length;
+  // Langfuse's public API can delete a dataset's runs but not the dataset itself.
+  const api = `${baseURL.replace(/\/$/, "")}/api/public`;
+  let runs = 0;
+  const datasets: string[] = [];
+  for (let page = 1; ; page++) {
+    const result = await call<{ data: { name: string }[]; meta: { totalPages: number } }>("GET", `${api}/v2/datasets?page=${page}&limit=100`, auth);
+    datasets.push(...result.data.map((d) => d.name).filter(isOurs));
+    if (page >= result.meta.totalPages) break;
+  }
+  for (const dataset of datasets) {
+    const listed = await call<{ data: { name: string }[] }>("GET", `${api}/datasets/${encodeURIComponent(dataset)}/runs?limit=100`, auth).catch(() => ({ data: [] }));
+    for (const run of listed.data) {
+      if (!dryRun) await call("DELETE", `${api}/datasets/${encodeURIComponent(dataset)}/runs/${encodeURIComponent(run.name)}`, auth);
+      console.log(`langfuse: ${verb} dataset run ${run.name}`);
+      runs++;
+    }
+    console.log(`langfuse: dataset ${dataset} must be deleted in the Langfuse UI (no API for it)`);
+  }
+  return names.length + runs;
 }
 
 async function langsmith(apiKey: string, baseURL: string): Promise<number> {
@@ -91,7 +118,18 @@ async function langsmith(apiKey: string, baseURL: string): Promise<number> {
     if (!dryRun) await send("DELETE", `${base}/-/${handle}`);
     console.log(`langsmith: ${verb} prompt ${handle}`);
   }
-  return handles.length;
+  const api = `${baseURL.replace(/\/$/, "")}/api/v1`;
+  let extra = 0;
+  // Experiments and the test tracing project are both "sessions"; datasets go last.
+  for (const [kind, path] of [["project or experiment", "sessions"], ["dataset", "datasets"]] as const) {
+    const listed = await send<{ id: string; name: string }[]>("GET", `${api}/${path}?name_contains=tas-live&limit=100`);
+    for (const row of listed.filter((r) => isOurs(r.name))) {
+      if (!dryRun) await send("DELETE", `${api}/${path}/${row.id}`);
+      console.log(`langsmith: ${verb} ${kind} ${row.name}`);
+      extra++;
+    }
+  }
+  return handles.length + extra;
 }
 
 let total = 0;
