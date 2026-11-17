@@ -5,6 +5,7 @@ import { hashPrompt, parsePrompt, type PromptDefinition, type ResolvedPrompt } f
 import { renderPrompt, type RenderedMessage, type RenderInput } from "./prompt/template.ts";
 import { chat, run, type ChatSession, type RunOptions, type RunResult } from "./run.ts";
 import type { InferSchema, SchemaInput } from "./schema.ts";
+import { Tracer, type SpanHandle, type TraceExporter, type TraceOptions } from "./trace.ts";
 
 export class PromptNotFoundError extends Error {}
 export class PromptArchivedError extends Error {}
@@ -38,6 +39,14 @@ export interface TasClient {
   ): Promise<RunResult<S extends SchemaInput ? InferSchema<S> : unknown>>;
   /** Start a multi-turn conversation from a prompt. */
   chat(name: string, options?: RunOptions & GetPromptOptions): ChatSession;
+  /**
+   * Group work into a trace. Every `run`, `chat` turn and nested `trace` inside `fn` becomes a
+   * child span. What `fn` returns is recorded as the output unless you set one.
+   */
+  trace<T>(name: string, fn: (span: SpanHandle) => T | Promise<T>): Promise<T>;
+  trace<T>(name: string, options: TraceOptions, fn: (span: SpanHandle) => T | Promise<T>): Promise<T>;
+  /** Send any spans still waiting. Call before a short-lived process (script, serverless handler) exits. */
+  flush(): Promise<void>;
   /** Flush and release anything this client holds. Called by the pool on eviction. */
   close(): Promise<void>;
 }
@@ -59,6 +68,12 @@ export function createClient(config: TasConfig): TasClient {
     local.set(def.name, def);
   }
   const cache = new Map<string, { at: number; value: ResolvedPrompt }>();
+  // Each client owns its tracer, exporters and masking, so tenants' traces can never mix.
+  const exporters = (config.tracing === false ? [] : (config.tracing ?? [config.platform]))
+    .map((adapter) => adapter.tracing)
+    .filter((exporter): exporter is TraceExporter => exporter !== undefined);
+  const mask = createMasker(config.masking);
+  const tracer = new Tracer({ exporters, mask, ...(config.onTraceError ? { onError: config.onTraceError } : {}) });
 
   const fromLocal = (name: string): ResolvedPrompt | undefined => {
     const definition = local.get(name);
@@ -115,7 +130,7 @@ export function createClient(config: TasConfig): TasClient {
 
   return {
     config,
-    mask: createMasker(config.masking),
+    mask,
     prompts: {
       get,
       async render(name, input, options) {
@@ -124,13 +139,19 @@ export function createClient(config: TasConfig): TasClient {
       },
     },
     async run(name, options = {}) {
-      return run(config.gateway, await get(name, options), options) as never;
+      return run(config.gateway, await get(name, options), options, tracer) as never;
     },
     chat(name, options = {}) {
-      return chat(config.gateway, () => get(name, options), options);
+      return chat(config.gateway, () => get(name, options), options, tracer);
     },
+    trace<T>(name: string, optionsOrFn: TraceOptions | ((span: SpanHandle) => T | Promise<T>), maybeFn?: (span: SpanHandle) => T | Promise<T>) {
+      const [options, fn] = typeof optionsOrFn === "function" ? [{}, optionsOrFn] : [optionsOrFn, maybeFn!];
+      return tracer.span(name, options, fn);
+    },
+    flush: () => tracer.flush(),
     async close() {
       cache.clear();
+      await tracer.flush();
     },
   };
 }

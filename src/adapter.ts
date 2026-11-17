@@ -1,4 +1,5 @@
 import { ARCHIVED_TAG, hashPrompt, type PromptDefinition, type PromptRef } from "./prompt/model.ts";
+import type { TraceExporter } from "./trace.ts";
 
 /**
  * How a platform handles one part of the canonical prompt.
@@ -60,7 +61,9 @@ export interface PlatformAdapter {
   /** "langfuse", "langsmith", "braintrust", ... */
   id: string;
   prompts?: PromptRegistry;
-  // tracing and evals contracts land with their phases.
+  /** Where and how this platform takes traces. */
+  tracing?: TraceExporter;
+  // the evals contract lands with its phase.
 }
 
 /** Tags to store natively: the user's, plus the marker that makes an archived prompt filterable in the vendor UI. */

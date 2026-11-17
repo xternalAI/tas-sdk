@@ -10,6 +10,7 @@ import {
 } from "../adapter.ts";
 import { hashPrompt, parsePrompt, type PromptDefinition, type PromptMessage, type PromptModel, type PromptTool } from "../prompt/model.ts";
 import { extractVariables } from "../prompt/template.ts";
+import { asText, commonAttributes, type TraceExporter } from "../trace.ts";
 
 export interface LangSmithOptions {
   /** Passed explicitly, never read from the environment: one process may hold many tenants' keys. */
@@ -18,6 +19,8 @@ export interface LangSmithOptions {
   baseURL?: string;
   /** Needed only when the key can reach more than one workspace. */
   workspaceId?: string;
+  /** Tracing project that receives spans. Default "default". */
+  project?: string;
   /**
    * Decide which LangSmith provider a model id belongs to, when the built-in rules guess wrong
    * for your gateway's naming. Return undefined to fall back to them.
@@ -407,5 +410,39 @@ export function langsmith(options: LangSmithOptions): PlatformAdapter {
     },
   };
 
-  return { id: "langsmith", prompts };
+  const tracing: TraceExporter = {
+    url: `${baseURL.replace(/\/api\/v1$/, "")}/otel/v1/traces`,
+    headers: {
+      "x-api-key": options.apiKey,
+      "Langsmith-Project": options.project ?? "default",
+      ...(options.workspaceId ? { "x-tenant-id": options.workspaceId } : {}),
+    },
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    attributes: (span) => ({
+      ...commonAttributes(span),
+      "langsmith.span.kind": span.kind === "generation" ? "llm" : span.kind === "tool" ? "tool" : "chain",
+      // LangSmith shows a model call as a conversation only when its input is an object holding the messages.
+      ...(span.input !== undefined
+        ? { "input.value": asText(span.kind === "generation" && Array.isArray(span.input) ? { messages: span.input } : span.input) }
+        : {}),
+      ...(span.output !== undefined ? { "output.value": asText(span.output) } : {}),
+      ...Object.fromEntries(Object.entries(span.metadata ?? {}).map(([k, v]) => [`langsmith.metadata.${k}`, asText(v)])),
+      ...Object.fromEntries(Object.entries(span.modelParams ?? {}).map(([k, v]) => [`gen_ai.request.${k}`, v])),
+      // LangSmith has no user or session field; these metadata keys are what its threads view reads.
+      ...(span.userId ? { "langsmith.metadata.user_id": span.userId } : {}),
+      ...(span.sessionId ? { "langsmith.metadata.thread_id": span.sessionId } : {}),
+      ...(span.tags?.length ? { "langsmith.span.tags": span.tags.join(",") } : {}),
+      ...(span.parentSpanId ? {} : { "langsmith.trace.name": span.name }),
+      // The same metadata LangChain's own hub client attaches when it pulls a prompt.
+      ...(span.prompt?.platform === "langsmith" && span.prompt.version
+        ? {
+            "langsmith.metadata.lc_hub_owner": "-",
+            "langsmith.metadata.lc_hub_repo": span.prompt.name.replaceAll("/", "--"),
+            "langsmith.metadata.lc_hub_commit_hash": span.prompt.version,
+          }
+        : {}),
+    }),
+  };
+
+  return { id: "langsmith", prompts, tracing };
 }
