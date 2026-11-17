@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -7,9 +8,10 @@ import { createClient } from "./client.ts";
 import type { TasConfig, TasProfiles } from "./config.ts";
 import type { EvalDefinition } from "./eval.ts";
 import { loadPrompts, writePromptSchema } from "./prompt/file.ts";
+import { generatePromptTypes } from "./prompt/types.ts";
 import { pull, push, remove, status, type SyncContext, type SyncResult } from "./sync.ts";
 
-const USAGE = `tas prompts <status|pull|push|delete|schema> [names...]
+const USAGE = `tas prompts <status|pull|push|delete|schema|types> [names...]
 
   status   compare prompt files with the platform
   pull     platform -> files
@@ -19,6 +21,8 @@ const USAGE = `tas prompts <status|pull|push|delete|schema> [names...]
            "archived: true" in its file and push instead.
   schema   write prompt.schema.json into the prompts directory, for editor
            validation and autocomplete of *.prompt.yaml files
+  types    write prompts.ts into the prompts directory: a TypeScript interface of
+           every prompt's variables, placeholders and output, for createClient<Prompts>()
 
 tas eval <files...>
 
@@ -88,7 +92,7 @@ async function main(argv: string[]): Promise<number> {
   });
   if (positionals[0] === "eval" && !values.help) return runEvals(positionals.slice(1), values.config, values.profile);
   const [group, command, ...names] = positionals;
-  if (values.help || group !== "prompts" || !command || !["status", "pull", "push", "delete", "schema"].includes(command)) {
+  if (values.help || group !== "prompts" || !command || !["status", "pull", "push", "delete", "schema", "types"].includes(command)) {
     console.log(USAGE);
     return values.help ? 0 : 2;
   }
@@ -99,6 +103,14 @@ async function main(argv: string[]): Promise<number> {
     console.log(`wrote ${written}`);
     console.log(`Files written by "tas prompts pull" reference it on their first line. For files you write by hand, add that line`);
     console.log(`or map it in your editor, e.g. VS Code settings: "yaml.schemas": { "${written}": "*.prompt.yaml" }`);
+    return 0;
+  }
+  if (command === "types") {
+    const dir = resolve(config.promptsDir ?? "prompts");
+    const definitions = await loadPrompts(dir);
+    const file = resolve(dir, "prompts.ts");
+    await writeFile(file, generatePromptTypes(definitions));
+    console.log(`wrote ${file} (${definitions.length} prompts)`);
     return 0;
   }
   const registry = config.platform.prompts;

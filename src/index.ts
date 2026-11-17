@@ -5,6 +5,7 @@ export * from "./eval.ts";
 export * from "./masking.ts";
 export * from "./prompt/model.ts";
 export * from "./prompt/template.ts";
+export * from "./prompt/types.ts";
 export * from "./run.ts";
 export * from "./schema.ts";
 export * from "./trace.ts";
