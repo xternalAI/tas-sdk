@@ -38,8 +38,8 @@ export function promptPath(dir: string, name: string): string {
   return join(dir, ...name.split("/")) + PROMPT_EXTENSION;
 }
 
-/** Every prompt under `dir`, sorted by name. A missing directory is an empty set. */
-export async function loadPrompts(dir: string): Promise<PromptDefinition[]> {
+/** Names of the prompt files under `dir`, sorted. A missing directory is an empty set. */
+export async function listPromptNames(dir: string): Promise<string[]> {
   let entries: string[];
   try {
     entries = await readdir(dir, { recursive: true });
@@ -47,13 +47,24 @@ export async function loadPrompts(dir: string): Promise<PromptDefinition[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  const files = entries.filter((f) => f.endsWith(PROMPT_EXTENSION)).sort();
-  return Promise.all(
-    files.map(async (file) => {
-      const name = file.slice(0, -PROMPT_EXTENSION.length).split(sep).join("/");
-      return parsePromptFile(await readFile(join(dir, file), "utf8"), name);
-    }),
-  );
+  return entries
+    .filter((file) => file.endsWith(PROMPT_EXTENSION))
+    .map((file) => file.slice(0, -PROMPT_EXTENSION.length).split(sep).join("/"))
+    .sort();
+}
+
+/** The text of a prompt file as it is on disk, or undefined if there is no such prompt. */
+export async function readPromptSource(dir: string, name: string): Promise<string | undefined> {
+  return readFile(promptPath(dir, name), "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+}
+
+/** Every prompt under `dir`, sorted by name. A missing directory is an empty set. */
+export async function loadPrompts(dir: string): Promise<PromptDefinition[]> {
+  const names = await listPromptNames(dir);
+  return Promise.all(names.map(async (name) => parsePromptFile(await readFile(promptPath(dir, name), "utf8"), name)));
 }
 
 /** Write (or refresh) the JSON Schema that gives editors validation and autocomplete for prompt files. */
