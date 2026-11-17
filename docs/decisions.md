@@ -162,6 +162,19 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
   - *Item ids on each platform:* Braintrust uses ours directly. Langfuse ids are unique per project, so ours are prefixed with the dataset name and the prefix is removed on pull. LangSmith needs UUIDs, so ours are hashed into one and the original is kept in the example's metadata.
 - **Langfuse datasets cannot be deleted through its API**, so the cleanup script leaves them for the UI.
 
+## Studio and portability checks
+
+Pinned by `test/studio.test.ts`.
+
+- **`checkPortability(prompt)` says, from the prompt alone, what each platform would not store natively**: no network and no configuration, so it covers all three platforms whichever one you use. Three levels: *error* (cannot be stored there, or anywhere), *warning* (stored and round-trips, but behaves differently on that platform, typically in its playground), *info* (kept in metadata; your code is unaffected). `tas prompts check` prints it and exits 1 on an error. *Caveat:* it restates what the adapters do, in one file (`src/portability.ts`); when an adapter changes what is native, that file has to change with it.
+- **`tas studio` is a local page over the prompt files.** It reads and writes the same `*.prompt.yaml` files as everything else and keeps no state of its own. It offers live validation, variables, the per-platform notes above, sync status with push and pull, a preview of the rendered messages, and a test run through the gateway.
+- **The editor is the YAML itself**, not a form, so nothing the format can express is out of reach and what you see is what is saved. Saving rewrites the file the way the SDK writes it (validated, keys in a fixed order). *Caveat:* comments in a hand-written prompt file are lost when it is saved from the studio.
+- **A save that does not validate is refused** and leaves the file as it was.
+- **Deleting in the studio deletes the file only.** Removing a prompt from a platform stays an explicit CLI command.
+- **"Run" makes a real, billable model call**, always with the saved file, never with unsaved text. It is offered only when a gateway is configured.
+- **The server protects itself, because it can write files and use your platform credentials:** it listens on the loopback address only; it answers only when the request's Host header is that address (which blocks DNS rebinding); and every API call must carry a token that exists only in the page it served (which stops other sites open in the same browser). There is no login: anyone who can use your machine as you can use the studio.
+- **No build step and no front-end dependencies**: the page is one HTML string with inline styles and script.
+
 ## Multi-tenancy
 
 - **A client is self-contained** (platform, gateway, masking, cache). There is no global default client.
