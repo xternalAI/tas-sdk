@@ -4,6 +4,8 @@ export * from "./config.ts";
 export * from "./masking.ts";
 export * from "./prompt/model.ts";
 export * from "./prompt/template.ts";
+export * from "./run.ts";
+export * from "./schema.ts";
 export { memory } from "./adapters/memory.ts";
 export { braintrust, BraintrustError, type BraintrustOptions } from "./adapters/braintrust.ts";
 export { langfuse, LangfuseError, type LangfuseOptions } from "./adapters/langfuse.ts";

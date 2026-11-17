@@ -64,6 +64,25 @@ platform detail lives in [platform-mapping.md](platform-mapping.md).
 - **Sync never deletes on a platform.** A locally deleted prompt stays on the platform until `tas prompts delete <name> --yes`, which removes every version there, the local file and the lock entry. Without `--yes` it only lists. *Caveat:* platform deletion is permanent (verified live on all three).
 - **Deletion detection depends on the lockfile.** If `tas.lock.json` is lost or not committed, deleted prompts look new again and will be recreated.
 
+## Invocation
+
+Pinned by `test/run.test.ts`. **Not yet run against a real gateway**: only against a scripted fake.
+
+- **One wire format: OpenAI chat completions.** `run` posts to `<gateway.baseURL>/chat/completions`. Any gateway or provider that speaks it works; nothing else does. *Caveat:* provider-specific features outside that format (Anthropic-native tools, the OpenAI Responses API) are not reachable.
+- **The prompt drives the call.** Model, settings, tools and output schema come from the prompt; per-call `model`, `params`, `output` and `tools` override them.
+- **`gateway.models` maps model ids per gateway**, so switching gateway never means editing prompts.
+- **No streaming yet.** `run` returns only the complete reply.
+- **No retries.** A gateway error is thrown after one attempt, with its status. Retrying is left to the gateway or the caller.
+- **Structured output is validated.** With an output schema, the reply must be JSON that passes it, or `OutputValidationError` is thrown (it carries the raw text). Without a schema, `output` is undefined.
+- **A schema passed to the call replaces the prompt's.** It may be plain JSON Schema (validated with TypeBox) or any Standard Schema validator (output type inferred). A validator that cannot produce JSON Schema is still usable when the prompt has a schema to show the model; otherwise the call fails before reaching the gateway.
+- **Tools run only when you supply a function.** A tool call with no function ends the run and is returned in `toolCalls`, with nothing half-executed.
+- **Bad tool arguments go back to the model** as an error message so it can correct itself; **an error thrown by your function propagates** to you. The first is the model's mistake, the second is the application's.
+- **Tool loops are capped** by `maxSteps` (default 8 model calls), then `ToolLoopError`.
+- **A text prompt is sent as one user message.**
+- **`chat` renders the prompt once** and continues from the last reply; a failed turn leaves the conversation unchanged.
+- **Everything that makes a prompt unusable fails before the gateway is called:** archived, non-portable template syntax, missing variable, no model, no gateway.
+- **There is no separate agent abstraction.** `run` with tool functions is the agent loop; anything heavier belongs in a real agent framework.
+
 ## Multi-tenancy
 
 - **A client is self-contained** (platform, gateway, masking, cache). There is no global default client.
