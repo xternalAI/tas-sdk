@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "cleanup:live": "node scripts/cleanup-live.ts",
-    "test:live": "TAS_LIVE=1 vitest run test/braintrust.live.test.ts test/langfuse.live.test.ts test/langsmith.live.test.ts test/gateway.live.test.ts test/trace.live.test.ts test/eval.live.test.ts"
+    "test:live": "TAS_LIVE=1 vitest run test/braintrust.live.test.ts test/langfuse.live.test.ts test/langsmith.live.test.ts test/gateway.live.test.ts test/trace.live.test.ts test/eval.live.test.ts test/sync.live.test.ts"
   },
   "dependencies": {
     "typebox": "^1.4.7",

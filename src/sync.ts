@@ -33,7 +33,9 @@ export type SyncState =
   /** Synced before; the file is gone, the platform copy remains. */
   | "deleted-locally"
   /** Synced before; the platform copy is gone, the file remains. */
-  | "deleted-remotely";
+  | "deleted-remotely"
+  /** The platform has it, but in a form the adapter cannot represent (see `error`). Never pushed over or pulled. */
+  | "unreadable";
 
 export interface StatusEntry {
   name: string;
@@ -42,6 +44,8 @@ export interface StatusEntry {
   remote?: RemotePrompt;
   /** Template syntax outside the portable subset, found on either side. */
   nonPortable?: string[];
+  /** Why the platform copy could not be read. */
+  error?: string;
 }
 
 export interface SyncResult {
@@ -50,7 +54,9 @@ export interface SyncResult {
   /** Set when the canonical side replaced a change made on the other side. */
   overwrote?: "local" | "remote";
   /** Why a prompt was refused or skipped. */
-  reason?: "other-side-changed" | "non-portable" | "deleted-locally" | "deleted-remotely";
+  reason?: "other-side-changed" | "non-portable" | "deleted-locally" | "deleted-remotely" | "unreadable";
+  /** Why the platform copy could not be read. */
+  error?: string;
   /** Template syntax outside the portable subset. Rendering such a prompt throws by default. */
   nonPortable?: string[];
   version?: string;
@@ -118,7 +124,13 @@ async function gather(ctx: SyncContext) {
   const entries = await Promise.all(
     names.map(async (name): Promise<StatusEntry> => {
       const l = local.get(name);
-      const r = (await ctx.registry.get({ name })) ?? undefined;
+      let r: RemotePrompt | undefined;
+      try {
+        r = (await ctx.registry.get({ name })) ?? undefined;
+      } catch (error) {
+        // One prompt the adapter cannot represent must not hide the state of all the others.
+        return { name, state: "unreadable", ...(l ? { local: l } : {}), error: error instanceof Error ? error.message : String(error) };
+      }
       const state = classify(l && hashPrompt(l), r && hashPrompt(r.definition), locked[name]?.hash);
       const nonPortable = [...new Set([...(l ? findNonPortable(l) : []), ...(r ? findNonPortable(r.definition) : [])])];
       return { name, state, ...(l ? { local: l } : {}), ...(r ? { remote: r } : {}), ...(nonPortable.length ? { nonPortable } : {}) };
@@ -145,6 +157,10 @@ export async function push(ctx: SyncContext, options: SyncOptions = {}): Promise
   for (const entry of entries) {
     if (options.only && !options.only.includes(entry.name)) continue;
     const { name, state, local, remote } = entry;
+    if (state === "unreadable") {
+      results.push({ name, action: "skipped", reason: "unreadable", error: entry.error! });
+      continue;
+    }
     if (!local) {
       // Deleted here but still on the platform: push never deletes there. `remove` does.
       results.push({ name, action: "skipped", ...(state === "deleted-locally" ? { reason: "deleted-locally" as const } : {}) });
@@ -194,6 +210,10 @@ export async function pull(ctx: SyncContext, options: SyncOptions = {}): Promise
   for (const entry of entries) {
     if (options.only && !options.only.includes(entry.name)) continue;
     const { name, state, remote } = entry;
+    if (state === "unreadable") {
+      results.push({ name, action: "skipped", reason: "unreadable", error: entry.error! });
+      continue;
+    }
     if (!remote) {
       // Deleted on the platform. If the platform is the truth the file goes too (git still has it).
       if (state === "deleted-remotely" && (ctx.canonical === "platform" || options.force)) {

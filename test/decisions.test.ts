@@ -179,17 +179,28 @@ describe("decisions: sync", () => {
     expect(await sync.status(c)).toEqual([]);
   });
 
-  it("one prompt the adapter cannot read fails status for the whole project (known limitation)", async () => {
+  it("a prompt the adapter cannot read is reported as unreadable and left alone; the others still sync", async () => {
     await registry.push(fixtures[1]!);
     await registry.push(fixtures[2]!);
+    await writePrompt(dir, { ...fixtures[1]!, description: "local edit" });
     const broken: PromptRegistry = {
       ...registry,
       get: async (ref) => {
-        if (ref.name === "plain") throw new Error('prompt "plain" is not portable');
+        if (ref.name === "plain") throw new Error('prompt "plain" is not portable: multimodal');
         return registry.get(ref);
       },
     };
-    await expect(sync.status({ ...ctx(), registry: broken })).rejects.toThrow(/not portable/);
+    const c = { ...ctx(), registry: broken };
+    expect(await sync.status(c)).toMatchObject([
+      { name: "legacy/completion_v1", state: "remote-only" },
+      { name: "plain", state: "unreadable", error: 'prompt "plain" is not portable: multimodal' },
+    ]);
+    // Neither direction touches it: pushing would overwrite something we could not even read.
+    for (const direction of [sync.push, sync.pull]) {
+      expect((await direction(c, { force: true })).find((r) => r.name === "plain")).toMatchObject({ action: "skipped", reason: "unreadable" });
+    }
+    expect((await registry.get({ name: "plain" }))!.definition.description).toBeUndefined();
+    expect((await sync.pull(c)).find((r) => r.name === "legacy/completion_v1")).toMatchObject({ action: "unchanged" });
   });
 });
 
@@ -275,11 +286,22 @@ describe("decisions: Braintrust", () => {
 });
 
 describe("decisions: Langfuse", () => {
-  it("tags belong to the whole prompt: an old version reports the newest tags", async () => {
-    const reg = lf();
+  it("tags are kept per version, although Langfuse itself stores one list per prompt", async () => {
+    const fake = fakeLangfuse();
+    const reg = lf(fake);
     const v1 = await reg.push({ ...fixtures[1]!, tags: ["first"] });
     await reg.push({ ...fixtures[1]!, tags: ["second"] });
-    expect((await reg.get({ name: "plain", version: v1.version }))!.definition.tags).toEqual(["second"]);
+    expect(fake.store.get("plain")!.map((row) => row.tags)).toEqual([["second"], ["second"]]); // what Langfuse holds
+    expect((await reg.get({ name: "plain", version: v1.version }))!.definition.tags).toEqual(["first"]);
+    expect((await reg.get({ name: "plain" }))!.definition.tags).toEqual(["second"]);
+  });
+
+  it("a tag edited in the Langfuse UI is picked up on the newest version", async () => {
+    const fake = fakeLangfuse();
+    const reg = lf(fake);
+    await reg.push({ ...fixtures[1]!, tags: ["ours"] });
+    fake.store.get("plain")![0]!.tags = ["ours", "added-in-ui"];
+    expect((await reg.get({ name: "plain" }))!.definition.tags).toEqual(["ours", "added-in-ui"]);
   });
 
   it.each([

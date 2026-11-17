@@ -59,6 +59,7 @@ platform detail lives in [platform-mapping.md](platform-mapping.md).
 - **The SDK refuses to serve an archived prompt** (`PromptArchivedError`) unless `allowArchived: true` is passed, whether it comes from bundled files or the platform.
 - **Only `archived: true` is valid.** `archived: false` is rejected so "not archived" has one spelling.
 - **The flag lives in the envelope on every platform** and is mirrored as an `archived` tag for filtering in the vendor UI. *Caveats:* the tag `archived` cannot be used as a user tag on an archived prompt; removing the mirrored tag in a vendor UI does not unarchive, because the envelope is the truth here (an exception to "vendor UI edits win").
+- **A prompt the adapter cannot represent is reported as `unreadable`**, with the reason, and is skipped by both `push` and `pull` even with `--force`. The rest of the project syncs normally.
 - **Sync detects deletions through the lockfile.** A prompt synced before and now missing on one side is "deleted locally" or "deleted on platform"; one never synced is simply new.
 - **Deletion follows the canonical rule.** Repo canonical: a locally deleted prompt is not pulled back; a prompt deleted on the platform is pushed back. Platform canonical: a prompt deleted there is not pushed back and `pull` removes the local file; a locally deleted file is restored by `pull`. `--force` overrides.
 - **Sync never deletes on a platform.** A locally deleted prompt stays on the platform until `tas prompts delete <name> --yes`, which removes every version there, the local file and the lock entry. Without `--yes` it only lists. *Caveat:* platform deletion is permanent (verified live on all three).
@@ -146,7 +147,7 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
 ## Braintrust
 
 - **The adapter never creates projects**; a missing project is an error.
-- **Slugs are flattened** (`support/triage` → `support--triage`) with the real name kept in `name`. Verified live that slugs accept `/`; flattening is kept for now.
+- **A prompt's Braintrust slug is its name, `/` included** (verified live with a push, pull and re-push of nested names). The slug is the identity; a prompt made in the Braintrust UI can have any display name.
 - **Placeholders are emulated** (Braintrust has no placeholder message); the native message list omits them.
 - **Tools on a text prompt are emulated**; Braintrust completion prompts have no tools field.
 - **Braintrust drops parameters the model does not support** (verified live: `temperature` on `gpt-5`). The intended set is kept in the envelope and restored on read.
@@ -161,7 +162,7 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
 - **Description and metadata are emulated**; a Langfuse prompt has no field for either.
 - **Default fetch differs:** Langfuse serves `production` when no label is given; the SDK asks for the newest version instead.
 - **Prompt type is fixed at creation.** Changing chat to text (or back) fails.
-- **Tags belong to the whole prompt, not a version.** Fetching an old version returns today's tags.
+- **Tags are kept per version** although Langfuse stores one tag list per prompt. Each version's tags are saved with it; the newest version reads Langfuse's own list, so a tag edited in the Langfuse UI is still picked up.
 - **Config with no model** is carried in `metadata["langfuse.config"]` and written back unchanged.
 - **Prompt references (composition)** are returned already expanded (verified live). Pushing a changed copy would replace the references with their text, so the adapter refuses without `force`.
 
@@ -186,8 +187,5 @@ Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item 
 
 ## Open questions
 
-- Whether to store Braintrust names natively now that slugs are known to accept `/`.
-- Whether Langfuse tags should also be kept per version in the envelope, as LangSmith's are.
 - Whether to allow hyphens in variable names.
-- One undecodable prompt on a platform currently fails `status`/`pull` for the whole project.
 - Package name is `@traceandscale/sdk`; the CLI is `tas` and the metadata key `__tas`.
