@@ -18,54 +18,85 @@ export const PROMPT_NAME = /^[a-z0-9][a-z0-9_-]*(\/[a-z0-9][a-z0-9_-]*)*$/;
 const strict = { additionalProperties: false } as const;
 const JsonObject = Type.Record(Type.String(), Type.Unknown());
 
+// The `description` on each field is what editors show on hover and in autocomplete for prompt
+// files, so these double as the user-facing reference for the format.
 const Message = Type.Union([
-  Type.Object({ role: Type.Enum(["system", "user", "assistant"]), content: Type.String() }, strict),
-  // A slot filled at call time with a list of messages (chat history, few-shots).
-  Type.Object({ placeholder: Type.String({ minLength: 1 }) }, strict),
+  Type.Object(
+    {
+      role: Type.Enum(["system", "user", "assistant"], { description: "Who the message is from." }),
+      content: Type.String({ description: "Message text. Use {{name}} or {{nested.path}} for variables." }),
+    },
+    { ...strict, title: "Message" },
+  ),
+  Type.Object(
+    { placeholder: Type.String({ minLength: 1, description: "Name of a slot filled at call time with a list of messages, such as chat history or few-shot examples." }) },
+    { ...strict, title: "Placeholder" },
+  ),
 ]);
 
 const Tool = Type.Object(
   {
-    name: Type.String({ minLength: 1 }),
-    description: Type.Optional(Type.String()),
-    parameters: JsonObject, // JSON Schema for the arguments
+    name: Type.String({ minLength: 1, description: "Name the model uses to call the tool." }),
+    description: Type.Optional(Type.String({ description: "Tells the model when and how to use the tool." })),
+    parameters: Type.Record(Type.String(), Type.Unknown(), { description: "JSON Schema for the tool's arguments." }),
   },
   strict,
 );
 
 const Model = Type.Object(
   {
-    // Model id as the configured gateway expects it, e.g. "gpt-5" or "anthropic/claude-sonnet-5-5".
-    id: Type.String({ minLength: 1 }),
-    // Sampling and limit parameters, OpenAI-compatible names (temperature, max_tokens, top_p, ...).
-    params: Type.Optional(JsonObject),
+    id: Type.String({ minLength: 1, description: 'Model id as your gateway expects it, e.g. "gpt-5" or "anthropic/claude-sonnet-5-5". Map ids per gateway with `gateway.models`.' }),
+    params: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Sampling and limit settings, using OpenAI names: temperature, max_tokens, top_p, ..." })),
   },
-  strict,
+  { ...strict, description: "Which model runs this prompt, and with what settings." },
 );
 
-const common = {
-  // Path-like, lowercase: "support/triage". Adapters map "/" to whatever the platform allows.
-  name: Type.String({ pattern: PROMPT_NAME.source }),
-  description: Type.Optional(Type.String()),
-  // Soft delete: the prompt and its history stay everywhere, but the SDK refuses to serve it.
-  // Only `true` is allowed, so "not archived" has exactly one spelling: the key is absent.
-  archived: Type.Optional(Type.Literal(true)),
-  model: Type.Optional(Model),
-  tools: Type.Optional(Type.Array(Tool)),
-  // Structured output contract.
-  output: Type.Optional(
-    Type.Object({ name: Type.Optional(Type.String()), schema: JsonObject, strict: Type.Optional(Type.Boolean()) }, strict),
+/** Everything a prompt can carry besides its body. Shared by the in-memory definition and the file format. */
+const attributes = {
+  description: Type.Optional(Type.String({ description: "What this prompt is for." })),
+  archived: Type.Optional(
+    // Only `true` is allowed, so "not archived" has exactly one spelling: the key is absent.
+    Type.Literal(true, { description: "Retire the prompt without deleting it: the SDK refuses to serve it. Remove this line to restore it." }),
   ),
-  tags: Type.Optional(Type.Array(Type.String())),
-  // Free-form user metadata. Never used by the SDK itself.
-  metadata: Type.Optional(JsonObject),
+  model: Type.Optional(Model),
+  tools: Type.Optional(Type.Array(Tool, { description: "Tools the model may call. Supply the functions when you run the prompt." })),
+  output: Type.Optional(
+    Type.Object(
+      {
+        name: Type.Optional(Type.String({ description: "Name for the output format." })),
+        schema: Type.Record(Type.String(), Type.Unknown(), { description: "JSON Schema the reply must match." }),
+        strict: Type.Optional(Type.Boolean({ description: "Ask the provider to enforce the schema exactly, where supported." })),
+      },
+      { ...strict, description: "Structured output: the reply is parsed as JSON and validated against this schema." },
+    ),
+  ),
+  tags: Type.Optional(Type.Array(Type.String(), { description: "Labels for organising prompts." })),
+  metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Anything else you want stored with the prompt. Never read by the SDK." })),
 };
+const messages = Type.Array(Message, { minItems: 1, description: "The conversation template, in order." });
+const text = Type.String({ description: "The prompt text, sent as a single user message. Use {{name}} for variables." });
+// Path-like, lowercase: "support/triage". In a file this comes from the file's path instead.
+const name = Type.String({ pattern: PROMPT_NAME.source });
 
-const ChatPrompt = Type.Object({ type: Type.Literal("chat"), messages: Type.Array(Message, { minItems: 1 }), ...common }, strict);
-const TextPrompt = Type.Object({ type: Type.Literal("text"), text: Type.String(), ...common }, strict);
+const ChatPrompt = Type.Object({ type: Type.Literal("chat"), name, messages, ...attributes }, strict);
+const TextPrompt = Type.Object({ type: Type.Literal("text"), name, text, ...attributes }, strict);
 
 /** JSON Schema of a prompt definition. */
 export const promptSchema = Type.Union([ChatPrompt, TextPrompt]);
+
+/**
+ * JSON Schema of a `*.prompt.yaml` file: the definition without `name` and `type`, which come from
+ * the file's path and from whether it has `messages` or `text`. Written next to the prompts by
+ * `tas prompts schema` so editors can validate and autocomplete them.
+ */
+export const promptFileSchema = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  title: "Trace and Scale prompt file",
+  oneOf: [
+    { ...Type.Object({ messages, ...attributes }, strict), title: "Chat prompt" },
+    { ...Type.Object({ text, ...attributes }, strict), title: "Text prompt" },
+  ],
+};
 
 export type PromptMessage = Type.Static<typeof Message>;
 export type PromptTool = Type.Static<typeof Tool>;

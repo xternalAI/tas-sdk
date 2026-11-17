@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -8,10 +8,14 @@ import {
   loadPrompts,
   memory,
   parsePromptFile,
+  promptFileSchema,
   promptPath,
+  SCHEMA_FILE,
   stringifyPrompt,
   sync,
+  validateSchema,
   writePrompt,
+  writePromptSchema,
   type PromptDefinition,
   type PromptRegistry,
 } from "../src/index.ts";
@@ -35,10 +39,46 @@ describe("prompt files", () => {
     const def: PromptDefinition = { type: "text", name: "a/b/c", text: "line one\nline two {{x}}\n" };
     const path = await writePrompt(dir, def);
     expect(path).toBe(promptPath(dir, "a/b/c"));
-    expect(await readFile(path, "utf8")).toBe("text: |\n  line one\n  line two {{x}}\n");
+    // The first line points editors at the schema, relative to the file, however deep it is.
+    expect(await readFile(path, "utf8")).toBe("# yaml-language-server: $schema=../../prompt.schema.json\ntext: |\n  line one\n  line two {{x}}\n");
     await writePrompt(dir, greet);
     expect(await loadPrompts(dir)).toEqual([def, greet]);
     expect(await loadPrompts(join(dir, "missing"))).toEqual([]);
+  });
+
+  it("ships a JSON Schema for prompt files that accepts what the SDK writes and rejects what it would reject", async () => {
+    const check = (file: unknown) => validateSchema(promptFileSchema, file);
+    for (const def of fixtures) {
+      const { name: _name, type: _type, ...file } = def as Record<string, unknown>;
+      expect(await check(file)).toMatchObject({ ok: true });
+    }
+    expect(await check({ text: "hi", name: "x" })).toMatchObject({ ok: false }); // name comes from the path
+    expect(await check({ messages: [{ role: "user", content: "hi" }], text: "both" })).toMatchObject({ ok: false });
+    expect(await check({ mesages: [] })).toMatchObject({ ok: false });
+    expect(await check({ text: "hi", archived: false })).toMatchObject({ ok: false });
+    // Every field carries a description: that text is the hover documentation in editors.
+    const undocumented: string[] = [];
+    const walk = (node: any, path: string) => {
+      for (const [key, child] of Object.entries<any>(node?.properties ?? {})) {
+        if (!child.description && !child.anyOf && !child.oneOf) undocumented.push(`${path}${key}`);
+        walk(child, `${path}${key}.`);
+        walk(child.items, `${path}${key}[].`);
+        for (const option of child.items?.anyOf ?? []) walk(option, `${path}${key}[].`);
+      }
+    };
+    for (const variant of promptFileSchema.oneOf) walk(variant, "");
+    expect(undocumented).toEqual([]);
+  });
+
+  it("writes the schema next to the prompts, once, and leaves it alone when it is current", async () => {
+    const path = await writePromptSchema(dir);
+    expect(path).toBe(join(dir, SCHEMA_FILE));
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(JSON.parse(JSON.stringify(promptFileSchema)));
+    const before = (await stat(path)).mtimeMs;
+    await new Promise((r) => setTimeout(r, 15));
+    await writePrompt(dir, greet); // writing a prompt keeps the schema present without rewriting it
+    expect((await stat(path)).mtimeMs).toBe(before);
+    expect(await loadPrompts(dir)).toEqual([greet]); // the schema file is not mistaken for a prompt
   });
 
   it("rejects files that restate name or type, and invalid content", () => {
@@ -171,6 +211,9 @@ describe("cli", () => {
     expect(pushed).toMatchObject({ code: 0, out: "pushed     team/greet  @1\n" });
     const lock = JSON.parse(await readFile(join(dir, "p", "tas.lock.json"), "utf8"));
     expect(lock.targets.acme).toMatchObject({ platform: "memory", prompts: { "team/greet": { version: "1" } } });
+
+    const schema = await run(["prompts", "schema"]);
+    expect(schema.out).toMatch(/wrote .*p\/prompt\.schema\.json[\s\S]*yaml\.schemas/);
 
     // delete lists first and only acts with --yes
     const dry = await run(["prompts", "delete", "team/greet"]);
