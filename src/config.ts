@@ -13,6 +13,13 @@ export interface GatewayConfig {
    * your prompts to what this gateway expects, so switching gateway never means editing prompts.
    */
   models?: Record<string, string>;
+  /**
+   * Extra attempts when the endpoint is unreachable, rate-limits (429) or fails server-side (5xx),
+   * with exponential backoff and respect for Retry-After. Default 2; 0 turns retrying off.
+   */
+  retries?: number;
+  /** First wait between attempts; doubles each time. Default 500. */
+  retryDelayMs?: number;
   fetch?: typeof fetch;
 }
 

@@ -1,6 +1,6 @@
 /**
- * Invocation. Also pins the invocation decisions in docs/decisions.md: no streaming, no retries,
- * tool errors propagate while bad tool arguments go back to the model, unhandled tool calls end the run.
+ * Invocation. Also pins the invocation decisions in docs/decisions.md: what is retried, how streaming
+ * behaves, tool errors propagate while bad tool arguments go back to the model, unhandled tool calls end the run.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -17,7 +17,22 @@ import {
   type TasConfig,
 } from "../src/index.ts";
 
-type Reply = Partial<ChatMessage> | { status: number; body: string };
+type Reply = Partial<ChatMessage> | { status: number; body: string; headers?: Record<string, string> } | { networkError: string } | { sse: unknown[]; chunkSize?: number };
+
+/** A streamed reply: server-sent events, deliberately cut into network chunks that split lines. */
+function sseResponse(events: unknown[], chunkSize = 17): Response {
+  const text = events.map((e) => `data: ${typeof e === "string" ? e : JSON.stringify(e)}\n\n`).join("");
+  const bytes = new TextEncoder().encode(text);
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let i = 0; i < bytes.length; i += chunkSize) controller.enqueue(bytes.slice(i, i + chunkSize));
+      controller.close();
+    },
+  });
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+const textChunk = (content: string) => ({ choices: [{ delta: { content } }] });
+const usageChunk = { choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } };
 
 /** An OpenAI-compatible gateway that answers with the scripted replies in order and records what it was sent. */
 function fakeGateway(...replies: Reply[]) {
@@ -26,7 +41,9 @@ function fakeGateway(...replies: Reply[]) {
     requests.push({ url: String(url), headers: init!.headers as Record<string, string>, body: JSON.parse(String(init!.body)) });
     const reply = replies.shift();
     if (!reply) throw new Error("fake gateway: no reply scripted");
-    if ("status" in reply) return new Response(reply.body, { status: reply.status });
+    if ("networkError" in reply) throw new TypeError(reply.networkError);
+    if ("sse" in reply) return sseResponse(reply.sse, reply.chunkSize);
+    if ("status" in reply) return new Response(reply.body, { status: reply.status, ...(reply.headers ? { headers: reply.headers } : {}) });
     return new Response(
       JSON.stringify({
         choices: [{ message: { role: "assistant", content: null, ...reply }, finish_reason: reply.tool_calls ? "tool_calls" : "stop" }],
@@ -230,7 +247,7 @@ describe("chat", () => {
 
   it("a failed turn leaves the conversation as it was", async () => {
     const gw = fakeGateway({ content: "one" }, { status: 500, body: "boom" }, { content: "three" });
-    const session = setup(gw).chat("plain");
+    const session = setup(gw, {}, { retries: 0 }).chat("plain");
     await session.send("a");
     await expect(session.send("b")).rejects.toBeInstanceOf(GatewayError);
     expect(session.messages).toHaveLength(3);
@@ -240,16 +257,37 @@ describe("chat", () => {
 });
 
 describe("decisions: invocation", () => {
-  it("does not retry: a gateway error is reported after one attempt, with its status", async () => {
-    const gw = fakeGateway({ status: 429, body: "slow down" }, { content: "would have worked" });
-    await expect(setup(gw).run("plain")).rejects.toMatchObject({ status: 429, message: expect.stringContaining("slow down") });
-    expect(gw.requests).toHaveLength(1);
+  const fast = { retryDelayMs: 1 };
+
+  it("retries rate limits, server errors and network failures, then succeeds", async () => {
+    const gw = fakeGateway({ status: 429, body: "slow down" }, { networkError: "ECONNRESET" }, { content: "third time lucky" });
+    expect((await setup(gw, {}, fast).run("plain")).text).toBe("third time lucky");
+    expect(gw.requests).toHaveLength(3);
+    expect(new Set(gw.requests.map((r) => JSON.stringify(r.body))).size).toBe(1); // the same request each time
   });
 
-  it("does not stream: the request never asks for it", async () => {
-    const gw = fakeGateway({ content: "x" });
-    await setup(gw).run("plain");
+  it("gives up after 2 retries by default, reporting the last failure with its status", async () => {
+    const gw = fakeGateway({ status: 503, body: "a" }, { status: 503, body: "b" }, { status: 503, body: "still down" }, { content: "never reached" });
+    await expect(setup(gw, {}, fast).run("plain")).rejects.toMatchObject({ status: 503, message: expect.stringContaining("still down") });
+    expect(gw.requests).toHaveLength(3);
+  });
+
+  it("does not retry mistakes that will not fix themselves, and `retries: 0` turns retrying off", async () => {
+    const badRequest = fakeGateway({ status: 400, body: "unknown model" }, { content: "x" });
+    await expect(setup(badRequest, {}, fast).run("plain")).rejects.toMatchObject({ status: 400 });
+    expect(badRequest.requests).toHaveLength(1);
+    const off = fakeGateway({ status: 429, body: "slow down" }, { content: "x" });
+    await expect(setup(off, {}, { retries: 0 }).run("plain")).rejects.toMatchObject({ status: 429 });
+    expect(off.requests).toHaveLength(1);
+  });
+
+  it("only asks for a streamed reply when streaming", async () => {
+    const gw = fakeGateway({ content: "x" }, { sse: [textChunk("y"), "[DONE]"] });
+    const client = setup(gw);
+    await client.run("plain");
+    await client.stream("plain").result;
     expect(gw.requests[0]!.body.stream).toBeUndefined();
+    expect(gw.requests[1]!.body).toMatchObject({ stream: true, stream_options: { include_usage: true } });
   });
 
   it("fails before calling the gateway when the prompt cannot be used", async () => {
@@ -268,5 +306,83 @@ describe("decisions: invocation", () => {
     await createClient({ platform: memory(), prompts: [{ type: "text", name: "t", text: "Summarise {{doc}}", model: { id: "m" } }], gateway: { baseURL: "https://gw.test/v1", fetch: gw.fetch } }).run("t", { variables: { doc: "this" } });
     expect(gw.requests[0]!.body.messages).toEqual([{ role: "user", content: "Summarise this" }]);
     expect(gw.requests[0]!.headers.authorization).toBeUndefined(); // no key configured, none sent
+  });
+});
+
+describe("streaming", () => {
+  const toolChunks = [
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_9", function: { name: "lookup_order", arguments: "" } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"id":' } }] } }] },
+    { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"A1"}' } }] }, finish_reason: "tool_calls" }] },
+    usageChunk,
+    "[DONE]",
+  ];
+  const collect = async <T>(iterable: AsyncIterable<T>) => {
+    const out: T[] = [];
+    for await (const item of iterable) out.push(item);
+    return out;
+  };
+
+  it("delivers text as it arrives and resolves to the same result a plain run gives", async () => {
+    const gw = fakeGateway({ sse: [textChunk("Hel"), textChunk("lo "), textChunk("there."), { choices: [{ delta: {}, finish_reason: "stop" }] }, usageChunk, "[DONE]"] });
+    const stream = setup(gw).stream("plain");
+    expect(await collect(stream)).toEqual([{ type: "text", delta: "Hel" }, { type: "text", delta: "lo " }, { type: "text", delta: "there." }]);
+    expect(await stream.result).toMatchObject({ text: "Hello there.", steps: 1, finishReason: "stop", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, toolCalls: [] });
+  });
+
+  it("`text` yields just the words, whatever size the network chunks are", async () => {
+    for (const chunkSize of [1, 7, 4096]) {
+      const gw = fakeGateway({ sse: [textChunk("streamed "), textChunk("in "), textChunk("pieces"), "[DONE]"], chunkSize });
+      expect((await collect(setup(gw).stream("plain").text)).join("")).toBe("streamed in pieces");
+    }
+  });
+
+  it("assembles a tool call from its pieces, runs it, and keeps streaming the next step", async () => {
+    const gw = fakeGateway({ sse: toolChunks }, { sse: [textChunk("Refunded."), "[DONE]"] });
+    const stream = setup(gw).stream("with-tool", { tools: { lookup_order: ({ id }) => ({ id, status: "refunded" }) } });
+    const call = { id: "call_9", type: "function", function: { name: "lookup_order", arguments: '{"id":"A1"}' } };
+    expect(await collect(stream)).toEqual([
+      { type: "tool-call", call },
+      { type: "tool-result", toolCallId: "call_9", name: "lookup_order", content: '{"id":"A1","status":"refunded"}' },
+      { type: "text", delta: "Refunded." },
+    ]);
+    const result = await stream.result;
+    expect(result).toMatchObject({ text: "Refunded.", steps: 2 });
+    expect(gw.requests[1]!.body.messages.at(-1)).toEqual({ role: "tool", tool_call_id: "call_9", content: '{"id":"A1","status":"refunded"}' });
+  });
+
+  it("a tool call with no function still ends the run and is handed back", async () => {
+    const stream = setup(fakeGateway({ sse: toolChunks })).stream("with-tool");
+    expect((await collect(stream)).map((e) => e.type)).toEqual(["tool-call"]);
+    expect((await stream.result).toolCalls).toHaveLength(1);
+  });
+
+  it("the result can be awaited without iterating, and validates structured output at the end", async () => {
+    const good = setup(fakeGateway({ sse: [textChunk('{"queue":'), textChunk('"billing"}'), "[DONE]"] })).stream("triage", { variables });
+    expect((await good.result).output).toEqual({ queue: "billing" });
+    const bad = setup(fakeGateway({ sse: [textChunk('{"queue":"sales"}'), "[DONE]"] })).stream("triage", { variables });
+    await expect(bad.result).rejects.toBeInstanceOf(OutputValidationError);
+  });
+
+  it("a failure reaches both the iterator and the result, after any text already delivered", async () => {
+    const stream = setup(fakeGateway({ status: 500, body: "boom" }), {}, { retries: 0 }).stream("plain");
+    await expect(collect(stream)).rejects.toMatchObject({ status: 500 });
+    await expect(stream.result).rejects.toBeInstanceOf(GatewayError);
+    const missing = setup(fakeGateway()).stream("triage"); // a prompt problem surfaces the same way
+    await expect(missing.result).rejects.toThrow(/missing variable/);
+  });
+
+  it("works with an endpoint that ignores the request to stream", async () => {
+    const stream = setup(fakeGateway({ content: "all at once" })).stream("plain");
+    expect(await collect(stream.text)).toEqual(["all at once"]);
+    expect((await stream.result).text).toBe("all at once");
+  });
+
+  it("chat turns can be streamed and still build up the conversation", async () => {
+    const gw = fakeGateway({ sse: [textChunk("Hi."), "[DONE]"] }, { content: "Five days." });
+    const session = setup(gw).chat("plain");
+    expect((await collect(session.stream("hello").text)).join("")).toBe("Hi.");
+    await session.send("how long?");
+    expect(gw.requests[1]!.body.messages.map((m: ChatMessage) => m.content)).toEqual(["Be brief.", "hello", "Hi.", "how long?"]);
   });
 });

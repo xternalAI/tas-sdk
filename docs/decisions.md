@@ -76,8 +76,14 @@ Pinned by `test/run.test.ts`. Verified live on 2026-11-17 against a local Ollama
 - **One wire format: OpenAI chat completions.** `run` posts to `<gateway.baseURL>/chat/completions`. Any gateway or provider that speaks it works; nothing else does. *Caveat:* provider-specific features outside that format (Anthropic-native tools, the OpenAI Responses API) are not reachable.
 - **The prompt drives the call.** Model, settings, tools and output schema come from the prompt; per-call `model`, `params`, `output` and `tools` override them.
 - **`gateway.models` maps model ids per gateway**, so switching gateway never means editing prompts.
-- **No streaming yet.** `run` returns only the complete reply.
-- **No retries.** A gateway error is thrown after one attempt, with its status. Retrying is left to the gateway or the caller.
+- **Streaming is a separate call, not a flag.** `stream()` returns something to iterate (`text` for words, or events: `text`, `tool-call`, `tool-result`) plus a `result` promise that resolves to exactly what `run()` returns. Tool loops, structured output and tracing behave the same as in `run()`. Verified live against a local model.
+  - Structured output is validated when the stream ends, so a stream can deliver text and then fail validation. Partial JSON is not parsed for you.
+  - A failure reaches both the iterator and `result`.
+  - One iterator per stream: events are queued for a single consumer.
+  - An endpoint that ignores the request to stream still works: its whole reply arrives as one piece.
+  - `chat` sessions have `send` and `stream`.
+- **Model calls are retried** on network failures, 408, 425, 429 and 5xx: 2 extra attempts by default (`gateway.retries`), exponential backoff with jitter from 500 ms, honouring `Retry-After`, never waiting more than 8 seconds at a time. Other 4xx statuses are not retried. *Caveats:* a retried request is sent again in full, so the provider may bill a call that timed out on our side; a stream is only retried before its first byte.
+- **Prompt registry calls (push, pull) are not retried.** A push is not safe to repeat blindly.
 - **Structured output is validated.** With an output schema, the reply must be JSON that passes it, or `OutputValidationError` is thrown (it carries the raw text). Without a schema, `output` is undefined.
 - **A schema passed to the call replaces the prompt's.** It may be plain JSON Schema (validated with TypeBox) or any Standard Schema validator (output type inferred). A validator that cannot produce JSON Schema is still usable when the prompt has a schema to show the model; otherwise the call fails before reaching the gateway.
 - **Which schema libraries work on their own:** checked on 2026-11-17, zod 4 implements both halves of Standard Schema (validation and JSON Schema conversion), so a zod schema works anywhere. Valibot's core package implements validation only, so a Valibot schema needs the prompt to carry an output schema, or its separate JSON Schema converter. Not pinned by a test, since neither library is a dependency.
@@ -102,7 +108,7 @@ Pinned by `test/trace.test.ts`. Verified live on 2026-11-17: one traced, masked,
 - **`capture: { input: false, output: false }`** drops content from a span and everything under it; token counts and timing are kept.
 - **User, session and tags are set on the root span and inherited** by every span below.
 - **Traces go to `platform` by default.** `tracing: [a, b]` sends the same spans to several platforms (dual-write while switching vendor); `tracing: false` turns it off.
-- **Export never breaks the application.** A platform that is down or rejects spans is reported through `onTraceError` (default: a console warning). Failed batches are not retried and are lost.
+- **Export never breaks the application.** A platform that is down or rejects spans is reported through `onTraceError` (default: a console warning). A failed batch is retried twice in the background modes (`traceExport.retries`), then dropped. In `blocking` mode it is not retried unless you ask, since each attempt would add to your response time.
 - **Tracing must not slow the traced application.** Recording a span does no network work; by default spans are sent in the background. Three modes, set with `traceExport.mode`:
   - **`buffered` (default):** batches, sent after 2 seconds or 50 spans. Application code never waits. *Caveat:* a short-lived process must call `client.flush()` before exiting or the last spans are lost.
   - **`immediate`:** each trace is sent, as one request, when its outermost span ends, still in the background. Sooner visibility and a smaller loss window; application code still never waits.

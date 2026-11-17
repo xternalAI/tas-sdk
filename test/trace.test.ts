@@ -207,14 +207,14 @@ describe("decisions: export", () => {
     const down: PlatformAdapter = { id: "down", tracing: { url: "https://down.test", headers: {}, attributes: () => ({}), fetch: (async () => { throw new Error("ECONNREFUSED"); }) as typeof fetch } };
     const good = collector("good");
     const errors: string[] = [];
-    const client = createClient({ platform: memory(), tracing: [bad.adapter, down, good.adapter], onTraceError: (e) => errors.push(e.message) });
+    const client = createClient({ platform: memory(), tracing: [bad.adapter, down, good.adapter], traceExport: { retryDelayMs: 1 }, onTraceError: (e) => errors.push(e.message) });
     await expect(client.trace("work", () => "fine")).resolves.toBe("fine");
     await expect(client.flush()).resolves.toBeUndefined();
     expect(errors).toHaveLength(2);
     expect(errors.join(" | ")).toMatch(/bad\.test rejected 1 span\(s\): 500/);
     expect(errors.join(" | ")).toContain("ECONNREFUSED");
     expect(good.spans).toHaveLength(1);
-    expect(bad.requests).toHaveLength(1); // not retried
+    expect(bad.requests).toHaveLength(3); // tried, then retried twice in the background, then dropped
   });
 
   it("traces go to `platform` by default, to every platform listed in `tracing`, and nowhere when it is false", async () => {
@@ -353,6 +353,21 @@ describe("decisions: export never slows the application unless asked to", () => 
     await new Promise((r) => setTimeout(r, 5));
     slow.calls[1]!.release();
     await expect(failing).rejects.toThrow("app error"); // the application's own error still surfaces, after the trace is delivered
+  });
+
+  it("retries a failing platform in the background modes, but never in blocking mode", async () => {
+    const attempts = async (mode: "buffered" | "immediate" | "blocking", retries?: number) => {
+      const bad = collector("bad", 503);
+      const client = createClient({ platform: bad.adapter, traceExport: { mode, retryDelayMs: 1, ...(retries === undefined ? {} : { retries }) }, onTraceError: () => undefined });
+      await client.trace("work", () => 1);
+      await client.flush();
+      return bad.requests.length;
+    };
+    expect(await attempts("buffered")).toBe(3);
+    expect(await attempts("immediate")).toBe(3);
+    expect(await attempts("blocking")).toBe(1); // every attempt would be added to the caller's wait
+    expect(await attempts("blocking", 1)).toBe(2); // unless asked for
+    expect(await attempts("buffered", 0)).toBe(1);
   });
 
   it("gives up on a platform that never answers, so blocking calls and shutdown cannot hang", async () => {

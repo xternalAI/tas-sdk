@@ -5,7 +5,7 @@ import { createMasker, type Masker } from "./masking.ts";
 import { hashPrompt, parsePrompt, type PromptDefinition, type ResolvedPrompt } from "./prompt/model.ts";
 import { renderPrompt, type RenderedMessage, type RenderInput } from "./prompt/template.ts";
 import type { PromptInputs, PromptMap, PromptShapes } from "./prompt/types.ts";
-import { chat, run, type ChatSession, type RunOptions, type RunResult } from "./run.ts";
+import { chat, run, stream, type ChatSession, type RunOptions, type RunResult, type RunStream } from "./run.ts";
 import type { InferSchema, SchemaInput } from "./schema.ts";
 import { Tracer, type SpanHandle, type TraceExporter, type TraceOptions } from "./trace.ts";
 
@@ -46,6 +46,12 @@ export interface TasClient<P extends PromptShapes<P> = PromptMap> {
    */
   run<N extends NoInputNames<P>, S extends SchemaInput | undefined = undefined>(name: N, options?: RunOptionsOf<P, N, S>): Promise<RunOutput<P, N, S>>;
   run<N extends keyof P & string, S extends SchemaInput | undefined = undefined>(name: N, options: RunOptionsOf<P, N, S>): Promise<RunOutput<P, N, S>>;
+  /**
+   * As `run`, but streamed: iterate the returned value for text and tool events as they happen,
+   * and await its `result` for the same value `run` returns.
+   */
+  stream<N extends NoInputNames<P>, S extends SchemaInput | undefined = undefined>(name: N, options?: RunOptionsOf<P, N, S>): RunStream<RunOutput<P, N, S>["output"]>;
+  stream<N extends keyof P & string, S extends SchemaInput | undefined = undefined>(name: N, options: RunOptionsOf<P, N, S>): RunStream<RunOutput<P, N, S>["output"]>;
   /** Start a multi-turn conversation from a prompt. */
   chat<N extends NoInputNames<P>>(name: N, options?: RunOptionsOf<P, N, undefined>): ChatSession;
   chat<N extends keyof P & string>(name: N, options: RunOptionsOf<P, N, undefined>): ChatSession;
@@ -160,6 +166,9 @@ function createUntypedClient(config: TasConfig): TasClient {
     },
     async run(name: string, options: RunOptions<any> & GetPromptOptions = {}) {
       return run(config.gateway, await get(name, options), options, tracer) as never;
+    },
+    stream(name: string, options: RunOptions<any> & GetPromptOptions = {}) {
+      return stream(config.gateway, () => get(name, options), options, tracer) as never;
     },
     chat(name: string, options: RunOptions & GetPromptOptions = {}) {
       return chat(config.gateway, () => get(name, options), options, tracer);

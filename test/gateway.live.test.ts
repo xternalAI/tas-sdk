@@ -71,6 +71,28 @@ describe.skipIf(process.env.TAS_LIVE !== "1" || !baseURL || !model)("invocation 
     expect(result.text).toMatch(/27|blizzard/i); // only knowable from the tool result
   });
 
+  it("streams text in several pieces and ends with the same result shape, including usage", async () => {
+    const stream = client.stream("ping", { variables: { word: "pong" } });
+    const pieces: string[] = [];
+    for await (const delta of stream.text) pieces.push(delta);
+    const result = await stream.result;
+    expect(pieces.length).toBeGreaterThan(0);
+    expect(pieces.join("")).toBe(result.text);
+    expect(result.text.toLowerCase()).toContain("pong");
+    expect(result.usage.outputTokens).toBeGreaterThan(0);
+  });
+
+  it("streams a tool round-trip: call, result, then the answer", async () => {
+    const stream = client.stream("weather", { variables: { city: "Riga" }, tools: { get_weather: () => ({ temperature_c: -27, conditions: "blizzard" }) } });
+    const kinds: string[] = [];
+    for await (const event of stream) if (kinds.at(-1) !== event.type) kinds.push(event.type);
+    const result = await stream.result;
+    expect(kinds.filter((k) => k !== "text")).toEqual(["tool-call", "tool-result"]);
+    expect(kinds.at(-1)).toBe("text");
+    expect(result.steps).toBe(2);
+    expect(result.text).toMatch(/27|blizzard/i);
+  });
+
   it("chat remembers earlier turns", async () => {
     const session = client.chat("assistant");
     await session.send("My name is Zebulon. Remember it.");
