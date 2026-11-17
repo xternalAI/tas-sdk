@@ -15,7 +15,7 @@ export * from "./schema.ts";
 export * from "./trace.ts";
 export { memory } from "./adapters/memory.ts";
 export { braintrust, BraintrustError, type BraintrustOptions } from "./adapters/braintrust.ts";
-export { langfuse, LangfuseError, type LangfuseOptions } from "./adapters/langfuse.ts";
+export { langfuse, LangfuseError, type LangfuseOptions } from "./adapters/langfuse/index.ts";
 export { langsmith, LangSmithError, LANGSMITH_PROVIDERS, type LangSmithOptions, type LangSmithProvider } from "./adapters/langsmith.ts";
 export * from "./prompt/file.ts";
 export * as sync from "./sync.ts";
