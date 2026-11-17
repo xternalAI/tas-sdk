@@ -6,3 +6,4 @@ dist
 test/.types-*
 coverage
 .claude/worktrees
+dist
