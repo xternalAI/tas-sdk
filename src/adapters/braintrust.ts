@@ -10,7 +10,8 @@ import {
   type PromptRegistry,
   type RemotePrompt,
 } from "../adapter.ts";
-import { asText, commonAttributes, type TraceExporter } from "../trace.ts";
+import type { ExperimentReporter } from "../eval.ts";
+import { commonAttributes, type TraceExporter } from "../trace.ts";
 import { hashPrompt, parsePrompt, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
 
 export interface BraintrustOptions {
@@ -373,5 +374,44 @@ export function braintrust(options: BraintrustOptions): PlatformAdapter {
     }),
   };
 
-  return { id: "braintrust", prompts, tracing };
+  const experiments: ExperimentReporter = {
+    async report(result) {
+      const project_id = await projectId();
+      // Creating a dataset that exists returns it, and rows are upserted by id, so re-runs do not duplicate.
+      const dataset = await request<{ id: string }>("POST", "/v1/dataset", {
+        body: { project_id, name: result.dataset.name, ...(result.dataset.description ? { description: result.dataset.description } : {}) },
+      });
+      await request("POST", `/v1/dataset/${dataset.id}/insert`, {
+        body: { events: result.rows.map((row) => ({ id: row.id, input: row.input, expected: row.expected, metadata: row.metadata })) },
+      });
+      const experiment = await request<{ id: string }>("POST", "/v1/experiment", {
+        body: { project_id, name: result.runName, dataset_id: dataset.id, metadata: { ...result.metadata, evaluation: result.name }, ensure_new: true },
+      });
+      await request("POST", `/v1/experiment/${experiment.id}/insert`, {
+        body: {
+          events: result.rows.map((row) => {
+            const comments = Object.fromEntries(Object.entries(row.scores).flatMap(([name, s]) => (s.comment ? [[name, s.comment]] : [])));
+            return {
+              input: row.input,
+              output: row.output,
+              expected: row.expected,
+              scores: Object.fromEntries(Object.entries(row.scores).map(([name, s]) => [name, s.score])),
+              ...(row.error ? { error: row.error } : {}),
+              metadata: {
+                ...row.metadata,
+                ...(Object.keys(comments).length ? { score_comments: comments } : {}),
+                ...(row.scorerErrors ? { scorer_errors: row.scorerErrors } : {}),
+              },
+              metrics: { start: row.startTime / 1000, end: row.endTime / 1000 },
+              origin: { object_type: "dataset", object_id: dataset.id, id: row.id },
+            };
+          }),
+        },
+      });
+      const summary = await request<{ experiment_url?: string }>("GET", `/v1/experiment/${experiment.id}/summarize`);
+      return summary.experiment_url ? { url: summary.experiment_url } : {};
+    },
+  };
+
+  return { id: "braintrust", prompts, tracing, experiments };
 }

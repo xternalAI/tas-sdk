@@ -3,7 +3,10 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { createClient } from "./client.ts";
 import type { TasConfig, TasProfiles } from "./config.ts";
+import type { EvalDefinition } from "./eval.ts";
+import { loadPrompts } from "./prompt/file.ts";
 import { pull, push, remove, status, type SyncContext, type SyncResult } from "./sync.ts";
 
 const USAGE = `tas prompts <status|pull|push|delete> [names...]
@@ -14,6 +17,11 @@ const USAGE = `tas prompts <status|pull|push|delete> [names...]
   delete   permanently delete the named prompts: every version on the platform,
            plus the local file. To retire a prompt reversibly, set
            "archived: true" in its file and push instead.
+
+tas eval <files...>
+
+  Run evaluations. Each file's default export is defineEval({...}), an array of them, or a
+  function taking the client and returning either. Exits 1 if any threshold is not met.
 
 Options
   --config <path>    config file (default: tas.config.ts)
@@ -74,6 +82,7 @@ async function main(argv: string[]): Promise<number> {
       help: { type: "boolean", short: "h", default: false },
     },
   });
+  if (positionals[0] === "eval" && !values.help) return runEvals(positionals.slice(1), values.config, values.profile);
   const [group, command, ...names] = positionals;
   if (values.help || group !== "prompts" || !command || !["status", "pull", "push", "delete"].includes(command)) {
     console.log(USAGE);
@@ -112,6 +121,32 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "pull") return report(await pull(ctx, { force: values.force, ...only }));
   return report(await push(ctx, { force: values.force, ...(values.label ? { labels: values.label } : {}), ...only }));
+}
+
+async function runEvals(files: string[], configPath: string | undefined, profile: string | undefined): Promise<number> {
+  if (!files.length) throw new Error("eval needs at least one file");
+  const { config } = await loadConfig(configPath, profile);
+  const client = createClient({ ...config, prompts: config.prompts ?? (await loadPrompts(resolve(config.promptsDir ?? "prompts"))) });
+  let failed = false;
+  try {
+    for (const file of files) {
+      const exported = ((await import(pathToFileURL(resolve(file)).href)) as { default?: unknown }).default;
+      const resolved = typeof exported === "function" ? await exported(client) : exported;
+      const definitions = (Array.isArray(resolved) ? resolved : [resolved]) as EvalDefinition[];
+      if (!definitions[0]?.name) throw new Error(`${file}: default export must be defineEval({...}), an array of them, or a function returning either`);
+      for (const { name, ...options } of definitions) {
+        const result = await client.evaluate(name, options);
+        const scores = Object.entries(result.summary.scores).map(([k, v]) => `${k} ${v.mean.toFixed(3)}`).join("  ") || "(no scores)";
+        console.log(`${result.passed ? "pass" : "FAIL"}  ${name}  ${result.rows.length} items  ${scores}${result.summary.errors ? `  ${result.summary.errors} errored` : ""}`);
+        for (const failure of result.failures) console.log(`      below threshold: ${failure}`);
+        for (const report of result.reports) console.log(`      ${report.platform}: ${report.error ? `not reported (${report.error})` : (report.url ?? `reported as ${result.runName}`)}`);
+        failed ||= !result.passed;
+      }
+    }
+  } finally {
+    await client.close();
+  }
+  return failed ? 1 : 0;
 }
 
 main(process.argv.slice(2)).then(

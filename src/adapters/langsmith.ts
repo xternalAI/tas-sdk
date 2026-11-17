@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import type { ExperimentReporter } from "../eval.ts";
 import {
   ENVELOPE_KEY,
   packEnvelope,
@@ -444,5 +446,42 @@ export function langsmith(options: LangSmithOptions): PlatformAdapter {
     }),
   };
 
-  return { id: "langsmith", prompts, tracing };
+  const experiments: ExperimentReporter = {
+    async report(result) {
+      // LangSmith requires inputs and outputs to be objects, and examples are identified by UUID.
+      const asObject = (value: unknown, key: string) =>
+        typeof value === "object" && value !== null && !Array.isArray(value) ? value : { [key]: value ?? null };
+      const exampleId = (rowId: string) =>
+        createHash("sha256").update(`${result.dataset.name}\n${rowId}`).digest("hex").slice(0, 32).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+      const iso = (ms: number) => new Date(ms).toISOString();
+      // LangSmith requires experiment start < row start < row end < experiment end, all strictly, which a
+      // fast task does not produce: times recorded in the same millisecond are nudged apart.
+      const rowEnd = (row: { startTime: number; endTime: number }) => Math.max(row.endTime, row.startTime + 1);
+      const experimentStart = Math.min(result.startTime, ...result.rows.map((row) => row.startTime - 1));
+      const experimentEnd = Math.max(result.endTime, ...result.rows.map((row) => rowEnd(row) + 1));
+      // One call creates the dataset if needed, its examples, the experiment and the scores.
+      await request("POST", "/datasets/upload-experiment", {
+        experiment_name: result.runName,
+        dataset_name: result.dataset.name,
+        ...(result.dataset.description ? { dataset_description: result.dataset.description } : {}),
+        experiment_start_time: iso(experimentStart),
+        experiment_end_time: iso(experimentEnd),
+        experiment_metadata: { ...result.metadata, evaluation: result.name },
+        results: result.rows.map((row) => ({
+          row_id: exampleId(row.id),
+          inputs: asObject(row.input, "input"),
+          expected_outputs: asObject(row.expected, "output"),
+          actual_outputs: row.error ? { error: row.error } : asObject(row.output, "output"),
+          evaluation_scores: Object.entries(row.scores).map(([key, s]) => ({ key, score: s.score, ...(s.comment ? { comment: s.comment } : {}) })),
+          start_time: iso(row.startTime),
+          end_time: iso(rowEnd(row)),
+          run_name: result.name,
+          run_metadata: { ...row.metadata, item: row.id },
+        })),
+      });
+      return {};
+    },
+  };
+
+  return { id: "langsmith", prompts, tracing, experiments };
 }
