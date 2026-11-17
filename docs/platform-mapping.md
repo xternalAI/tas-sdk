@@ -80,7 +80,7 @@ These replace the **(verify)** notes in the LangSmith column above.
 - LangSmith adds the manifest's class name (e.g. `ChatPromptTemplate`) to the repo's tags by itself.
 - Model, tools and output schema are stored natively, in the structure the playground writes (taken from ~100 public hub prompts, then verified by pushing and reading back `model_provider` / `model_config`):
   - A prompt with a model is `RunnableSequence { first: <prompt>, last: RunnableBinding { bound: <model class>, kwargs: { tools } } }`.
-  - Model class and API-key argument per provider are in `LANGSMITH_PROVIDERS` (`src/adapters/langsmith.ts`): OpenAI, Anthropic, Google, Groq, Fireworks, Mistral, DeepSeek. The key is always a `{type: "secret"}` reference, never a value.
+  - Model class and API-key argument per provider are in `LANGSMITH_PROVIDERS` (`src/adapters/langsmith/models.ts`): OpenAI, Anthropic, Google, Groq, Fireworks, Mistral, DeepSeek. The key is always a `{type: "secret"}` reference, never a value.
   - Provider is inferred from the model id: a known prefix (`anthropic/…`), else the model family (`gpt-`, `claude`, `gemini`, …), else OpenAI-compatible. `resolveModel` overrides it.
   - `temperature`, `max_tokens`, `top_p`, `top_k`, `frequency_penalty`, `presence_penalty`, `reasoning_effort` are real model arguments. Other params stay in the envelope.
   - Output schema makes the prompt a `StructuredPrompt` with `schema_`; the output name and strict flag live inside the schema as `title` and `strict`. Chat prompts only.
