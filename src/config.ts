@@ -1,0 +1,43 @@
+import type { PlatformAdapter } from "./adapter.ts";
+import type { MaskingConfig } from "./masking.ts";
+import type { PromptDefinition } from "./prompt/model.ts";
+
+export interface GatewayConfig {
+  /** Any OpenAI-compatible endpoint: LiteLLM, Braintrust Gateway, Langfuse AI Gateway, a provider directly. */
+  baseURL: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+}
+
+export interface TasConfig {
+  /** Where prompts, traces and experiments go. */
+  platform: PlatformAdapter;
+  /**
+   * Which side wins when the repo and the platform disagree.
+   * - "repo": local prompt files are the truth; the platform is a mirror. Runtime reads local.
+   * - "platform": the platform is the truth; local files are a snapshot used as fallback.
+   * Default "repo".
+   */
+  canonical?: "repo" | "platform";
+  /** Label resolved when a call names neither a version nor a label. Default "production". */
+  defaultLabel?: string;
+  /** Prompts bundled with the app, usually `await loadPrompts("./prompts")`. */
+  prompts?: PromptDefinition[];
+  /** Where the CLI reads and writes prompt files. Default "./prompts". */
+  promptsDir?: string;
+  gateway?: GatewayConfig;
+  masking?: MaskingConfig;
+  /** How long a prompt fetched from the platform is reused. Default 60s. Stale copies serve on fetch failure. */
+  cacheTtlMs?: number;
+}
+
+/** Named configs for the CLI (`--profile acme`) and for apps with a fixed set of tenants. */
+export interface TasProfiles {
+  profiles: Record<string, TasConfig>;
+  default: string;
+}
+
+/** Identity helper for `tas.config.ts`, so the file gets type-checking and completion. */
+export function defineConfig<T extends TasConfig | TasProfiles>(config: T): T {
+  return config;
+}
