@@ -83,6 +83,27 @@ Pinned by `test/run.test.ts`. Verified live on 2026-11-17 against a local Ollama
 - **Everything that makes a prompt unusable fails before the gateway is called:** archived, non-portable template syntax, missing variable, no model, no gateway.
 - **There is no separate agent abstraction.** `run` with tool functions is the agent loop; anything heavier belongs in a real agent framework.
 
+## Tracing and masking
+
+Pinned by `test/trace.test.ts`. Verified live on 2026-11-17: one traced, masked, tool-using run was exported to all three platforms at once and read back from each through its API.
+
+- **We implement the OpenTelemetry wire format ourselves** (about 250 lines: spans encoded as OTLP JSON and posted with `fetch`) instead of depending on the official OpenTelemetry SDK. All three platforms accept OTLP JSON over HTTP (verified live), so no protobuf is needed. The official packages have a clean advisory record but bring roughly ten packages, and the exporter is still 0.x. *Caveat:* spans created by an application's own OpenTelemetry setup (HTTP, database) do not nest with ours, and ours do not appear in theirs. A separate optional bridge package is the planned answer for teams already on OpenTelemetry.
+- **One span shape for every platform**: `span`, `generation` (a model call) or `tool`, with input, output, metadata, model, settings, token usage and the prompt that produced it. Each adapter translates it into that platform's attribute names.
+- **`run` and `chat` are traced automatically**: one span per run named after the prompt, one per model call, one per tool execution. `client.trace()` groups them and adds your own spans.
+- **A block's return value is recorded as its output** unless the block sets one.
+- **Masking runs once, in-process, before any exporter**, on inputs, outputs, metadata and error messages. Every platform receives the same masked data. *Caveat:* masking affects only what is exported; the model and your application still see real values.
+- **Not masked, by decision:** user id, session id, tags, span names and model names. Do not put sensitive data in them.
+- **`capture: { input: false, output: false }`** drops content from a span and everything under it; token counts and timing are kept.
+- **User, session and tags are set on the root span and inherited** by every span below.
+- **Traces go to `platform` by default.** `tracing: [a, b]` sends the same spans to several platforms (dual-write while switching vendor); `tracing: false` turns it off.
+- **Export never breaks the application.** A platform that is down or rejects spans is reported through `onTraceError` (default: a console warning). Failed batches are not retried and are lost.
+- **Spans are batched**: sent after 2 seconds or 50 spans. *Caveat:* a short-lived process (script, serverless handler) must call `client.flush()` before exiting or spans are lost.
+- **Each client has its own tracer.** Tenants never share exporters, masking rules or trace ids; a span opened by one client is not a parent for another's.
+- **Each chat turn is its own trace.** Pass `trace.sessionId` to group a conversation on the platform.
+- **Prompt identity in traces:** every span carries `tas.prompt.name` and `tas.prompt.hash`, which survive a vendor switch. A platform's own prompt link (Langfuse prompt version, LangSmith hub commit) is set only when that platform served the prompt. *Caveat:* with repo-canonical prompts there is no platform version, so the vendor UI will not link traces to its prompt page.
+- **Platform differences seen live:** Braintrust also copies unrecognised attributes into metadata, so user and session appear twice there; LangSmith assigns its own trace ids, so an id from `span.traceId` cannot be used to look a trace up in LangSmith.
+- **Scores are not part of tracing yet.** They arrive with evals.
+
 ## Multi-tenancy
 
 - **A client is self-contained** (platform, gateway, masking, cache). There is no global default client.

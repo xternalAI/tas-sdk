@@ -5,7 +5,7 @@
  *
  * Decisions pinned in other files: canonical side and sync rules (sync.test.ts), multi-tenancy,
  * masking and template strictness (core.test.ts), per-platform round-trips and UI-edit handling
- * (adapters.test.ts, conformance.ts), invocation (run.test.ts).
+ * (adapters.test.ts, conformance.ts), invocation (run.test.ts), tracing and masking (trace.test.ts).
  */
 import { readFile, rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";

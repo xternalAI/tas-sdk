@@ -8,6 +8,7 @@ import {
   type PromptRegistry,
   type RemotePrompt,
 } from "../adapter.ts";
+import { asText, commonAttributes, type TraceExporter } from "../trace.ts";
 import { hashPrompt, parsePrompt, PROMPT_NAME, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
 
 export interface LangfuseOptions {
@@ -258,5 +259,33 @@ export function langfuse(options: LangfuseOptions): PlatformAdapter {
     },
   };
 
-  return { id: "langfuse", prompts };
+  const tracing: TraceExporter = {
+    url: `${baseURL}/otel/v1/traces`,
+    // Without the version header Langfuse holds spans back for several minutes.
+    headers: { authorization, "x-langfuse-ingestion-version": "4" },
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    attributes: (span) => ({
+      ...commonAttributes(span),
+      "langfuse.observation.type": span.kind,
+      ...(span.input !== undefined ? { "langfuse.observation.input": asText(span.input) } : {}),
+      ...(span.output !== undefined ? { "langfuse.observation.output": asText(span.output) } : {}),
+      ...(span.model ? { "langfuse.observation.model.name": span.model } : {}),
+      ...(span.modelParams ? { "langfuse.observation.model.parameters": JSON.stringify(span.modelParams) } : {}),
+      ...(span.usage
+        ? { "langfuse.observation.usage_details": JSON.stringify({ input: span.usage.inputTokens, output: span.usage.outputTokens, total: span.usage.totalTokens }) }
+        : {}),
+      ...Object.fromEntries(Object.entries(span.metadata ?? {}).map(([k, v]) => [`langfuse.observation.metadata.${k}`, asText(v)])),
+      ...(span.userId ? { "langfuse.user.id": span.userId } : {}),
+      ...(span.sessionId ? { "langfuse.session.id": span.sessionId } : {}),
+      ...(span.tags?.length ? { "langfuse.trace.tags": span.tags } : {}),
+      ...(span.parentSpanId ? {} : { "langfuse.trace.name": span.name }),
+      ...(span.error ? { "langfuse.observation.level": "ERROR", "langfuse.observation.status_message": span.error } : {}),
+      // Langfuse links a generation to a prompt by its own integer version, so only for prompts it served.
+      ...(span.prompt?.platform === "langfuse" && span.prompt.version
+        ? { "langfuse.observation.prompt.name": span.prompt.name, "langfuse.observation.prompt.version": Number(span.prompt.version) }
+        : {}),
+    }),
+  };
+
+  return { id: "langfuse", prompts, tracing };
 }

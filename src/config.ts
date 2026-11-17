@@ -33,6 +33,13 @@ export interface TasConfig {
   promptsDir?: string;
   gateway?: GatewayConfig;
   masking?: MaskingConfig;
+  /**
+   * Platforms that receive traces. Default: `platform`. List two to send the same spans to both
+   * (for example while trialling a new vendor), or pass false to turn tracing off.
+   */
+  tracing?: PlatformAdapter[] | false;
+  /** Called when a platform cannot be reached or rejects spans. Default: a console warning. */
+  onTraceError?: (error: Error) => void;
   /** How long a prompt fetched from the platform is reused. Default 60s. Stale copies serve on fetch failure. */
   cacheTtlMs?: number;
 }

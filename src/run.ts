@@ -2,6 +2,7 @@ import type { GatewayConfig } from "./config.ts";
 import type { ResolvedPrompt } from "./prompt/model.ts";
 import { renderPrompt, type RenderInput } from "./prompt/template.ts";
 import { toJsonSchema, validateSchema, type InferSchema, type SchemaInput } from "./schema.ts";
+import type { SpanHandle, SpanInit, TraceOptions, Tracer } from "./trace.ts";
 
 /**
  * Invocation: turn a resolved prompt into a call on any OpenAI-compatible gateway, using the
@@ -75,6 +76,8 @@ export interface CallOptions<S extends SchemaInput | undefined = SchemaInput | u
   /** Most model calls in one run when tools are in play. Default 8. */
   maxSteps?: number;
   signal?: AbortSignal;
+  /** User, session, tags and metadata for the trace, and whether to record inputs and outputs. */
+  trace?: TraceOptions;
 }
 
 export interface RunOptions<S extends SchemaInput | undefined = SchemaInput | undefined> extends CallOptions<S>, RenderInput {
@@ -132,6 +135,14 @@ async function callGateway(gateway: GatewayConfig, body: Record<string, unknown>
   return completion;
 }
 
+type SpanRunner = <T>(name: string, init: SpanInit, fn: (span: SpanHandle) => T | Promise<T>) => Promise<T>;
+const untraced: SpanRunner = async (_name, _init, fn) => fn({ traceId: "", spanId: "", update() {} });
+const promptRef = (prompt: ResolvedPrompt) => ({
+  name: prompt.definition.name,
+  hash: prompt.hash,
+  ...(prompt.remote ? { platform: prompt.remote.platform, version: prompt.remote.version } : {}),
+});
+
 const stringify = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value ?? null));
 
 /** Run `messages` against the gateway with the prompt's configuration, looping over tool calls. */
@@ -140,7 +151,9 @@ export async function complete<S extends SchemaInput | undefined>(
   prompt: ResolvedPrompt,
   messages: ChatMessage[],
   options: CallOptions<S> = {},
+  tracer?: Tracer,
 ): Promise<RunResult<S extends SchemaInput ? InferSchema<S> : unknown>> {
+  const span: SpanRunner = tracer ? (name, init, fn) => tracer.span(name, init, fn) : untraced;
   const def = prompt.definition;
   if (!gateway) throw new GatewayError("no gateway configured: set `gateway` in the client config");
   const modelId = options.model ?? def.model?.id;
@@ -189,7 +202,24 @@ export async function complete<S extends SchemaInput | undefined>(
   };
 
   for (let steps = 1; ; steps++) {
-    const completion = await callGateway(gateway, { ...body, messages: transcript }, options.signal);
+    // One span per model call, carrying exactly what was sent and what came back.
+    const completion = await span(
+      model,
+      { kind: "generation", input: [...transcript], model, modelParams: { ...def.model?.params, ...options.params }, prompt: promptRef(prompt) },
+      async (generation) => {
+        const reply = await callGateway(gateway, { ...body, messages: transcript }, options.signal);
+        const used = reply.usage;
+        generation.update({
+          output: reply.choices[0]!.message,
+          usage: {
+            inputTokens: used?.prompt_tokens ?? 0,
+            outputTokens: used?.completion_tokens ?? 0,
+            totalTokens: used?.total_tokens ?? (used?.prompt_tokens ?? 0) + (used?.completion_tokens ?? 0),
+          },
+        });
+        return reply;
+      },
+    );
     const choice = completion.choices[0]!;
     const message: ChatMessage = { ...choice.message, role: "assistant", content: choice.message.content ?? null };
     transcript.push(message);
@@ -229,7 +259,9 @@ export async function complete<S extends SchemaInput | undefined>(
           content = "Error: arguments were not valid JSON";
         }
         // A function that throws is the application's failure, not the model's: it propagates.
-        if (!content) content = stringify(await handlers.get(name)!(args, { toolCallId: call.id, name }));
+        if (!content) {
+          content = stringify(await span(name, { kind: "tool", input: args }, () => handlers.get(name)!(args, { toolCallId: call.id, name })));
+        }
         transcript.push({ role: "tool", tool_call_id: call.id, content });
       }
       continue;
@@ -249,9 +281,15 @@ export async function complete<S extends SchemaInput | undefined>(
 }
 
 /** Render a prompt and run it. */
-export function run<S extends SchemaInput | undefined>(gateway: GatewayConfig | undefined, prompt: ResolvedPrompt, options: RunOptions<S> = {}) {
-  const messages: ChatMessage[] = [...renderPrompt(prompt.definition, options), ...(options.messages ?? [])];
-  return complete(gateway, prompt, messages, options);
+export function run<S extends SchemaInput | undefined>(gateway: GatewayConfig | undefined, prompt: ResolvedPrompt, options: RunOptions<S> = {}, tracer?: Tracer) {
+  const span: SpanRunner = tracer ? (name, init, fn) => tracer.span(name, init, fn) : untraced;
+  // The whole run is one span named after the prompt; model calls and tool executions nest under it.
+  return span(prompt.definition.name, { ...options.trace, input: options.variables ?? {}, prompt: promptRef(prompt) }, async (root) => {
+    const messages: ChatMessage[] = [...renderPrompt(prompt.definition, options), ...(options.messages ?? [])];
+    const result = await complete(gateway, prompt, messages, options, tracer);
+    root.update({ output: result.output ?? result.text });
+    return result;
+  });
 }
 
 export interface ChatSession {
@@ -262,7 +300,8 @@ export interface ChatSession {
 }
 
 /** A multi-turn conversation: the prompt is rendered once, then each `send` continues from the last reply. */
-export function chat(gateway: GatewayConfig | undefined, load: () => Promise<ResolvedPrompt>, options: RunOptions = {}): ChatSession {
+export function chat(gateway: GatewayConfig | undefined, load: () => Promise<ResolvedPrompt>, options: RunOptions = {}, tracer?: Tracer): ChatSession {
+  const span: SpanRunner = tracer ? (name, init, fn) => tracer.span(name, init, fn) : untraced;
   let history: ChatMessage[] | undefined;
   let prompt: ResolvedPrompt | undefined;
   return {
@@ -270,11 +309,15 @@ export function chat(gateway: GatewayConfig | undefined, load: () => Promise<Res
       return history ?? [];
     },
     async send(content, perCall) {
-      prompt ??= await load();
-      const base = history ?? [...renderPrompt(prompt.definition, options), ...(options.messages ?? [])];
-      const result = await complete(gateway, prompt, [...base, { role: "user", content }], { ...options, ...perCall });
-      history = result.messages; // only a successful turn becomes part of the conversation
-      return result as never;
+      const loaded = (prompt ??= await load());
+      // Each turn is its own trace; give the session a `trace.sessionId` to group them on the platform.
+      return span(loaded.definition.name, { ...options.trace, ...perCall?.trace, input: content, prompt: promptRef(loaded) }, async (turn) => {
+        const base = history ?? [...renderPrompt(loaded.definition, options), ...(options.messages ?? [])];
+        const result = await complete(gateway, loaded, [...base, { role: "user", content }], { ...options, ...perCall }, tracer);
+        history = result.messages; // only a successful turn becomes part of the conversation
+        turn.update({ output: result.output ?? result.text });
+        return result as never;
+      });
     },
   };
 }

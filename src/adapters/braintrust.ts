@@ -10,6 +10,7 @@ import {
   type PromptRegistry,
   type RemotePrompt,
 } from "../adapter.ts";
+import { asText, commonAttributes, type TraceExporter } from "../trace.ts";
 import { hashPrompt, parsePrompt, type PromptDefinition, type PromptMessage } from "../prompt/model.ts";
 
 export interface BraintrustOptions {
@@ -344,5 +345,33 @@ export function braintrust(options: BraintrustOptions): PlatformAdapter {
     },
   };
 
-  return { id: "braintrust", prompts };
+  const tracing: TraceExporter = {
+    url: `${baseURL}/otel/v1/traces`,
+    // Braintrust files spans under whatever this header names.
+    headers: {
+      authorization: `Bearer ${options.apiKey}`,
+      "x-bt-parent": options.projectId ? `project_id:${options.projectId}` : `project_name:${options.projectName}`,
+    },
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    attributes: (span) => ({
+      ...commonAttributes(span),
+      "braintrust.span_attributes.type": span.kind === "generation" ? "llm" : span.kind === "tool" ? "tool" : "task",
+      ...(span.input !== undefined ? { "braintrust.input_json": JSON.stringify(span.input) } : {}),
+      ...(span.output !== undefined ? { "braintrust.output_json": JSON.stringify(span.output) } : {}),
+      "braintrust.metadata": JSON.stringify({
+        ...span.metadata,
+        ...(span.model ? { model: span.model } : {}),
+        ...span.modelParams,
+        ...(span.userId ? { user_id: span.userId } : {}),
+        ...(span.sessionId ? { session_id: span.sessionId } : {}),
+        ...(span.prompt ? { prompt: span.prompt } : {}),
+      }),
+      ...(span.usage
+        ? { "braintrust.metrics": JSON.stringify({ prompt_tokens: span.usage.inputTokens, completion_tokens: span.usage.outputTokens, tokens: span.usage.totalTokens }) }
+        : {}),
+      ...(span.tags?.length && !span.parentSpanId ? { "braintrust.tags": span.tags } : {}),
+    }),
+  };
+
+  return { id: "braintrust", prompts, tracing };
 }
