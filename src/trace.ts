@@ -108,6 +108,47 @@ export function commonAttributes(span: SpanRecord): Record<string, unknown> {
   };
 }
 
+/**
+ * Vendor-neutral attributes for a span: the common ones plus input, output, settings, metadata and
+ * tags under names any OpenTelemetry backend can show. Used by the generic `otlp` target and by
+ * the OpenTelemetry bridge; the platform adapters use their vendor's own names instead.
+ */
+export function genericAttributes(span: SpanRecord): Record<string, unknown> {
+  return {
+    ...commonAttributes(span),
+    ...(span.input !== undefined ? { "input.value": asText(span.input) } : {}),
+    ...(span.output !== undefined ? { "output.value": asText(span.output) } : {}),
+    ...Object.fromEntries(Object.entries(span.modelParams ?? {}).map(([k, v]) => [`gen_ai.request.${k}`, v])),
+    ...Object.fromEntries(Object.entries(span.metadata ?? {}).map(([k, v]) => [`tas.metadata.${k}`, asText(v)])),
+    ...(span.tags?.length ? { "tas.tags": span.tags } : {}),
+  };
+}
+
+/**
+ * The part of `@opentelemetry/api` the bridge uses, described structurally so this package does
+ * not depend on it. Pass the module itself: `import * as api from "@opentelemetry/api"`.
+ */
+export interface OpenTelemetryApi {
+  trace: {
+    getTracer(name: string): { startSpan(name: string, options?: object, context?: unknown): OpenTelemetrySpan };
+    setSpan(context: any, span: any): unknown;
+    getSpan(context: any): OpenTelemetrySpan | undefined;
+  };
+  context: { active(): unknown; with<T>(context: any, fn: () => T): T };
+}
+interface OpenTelemetrySpan {
+  spanContext(): { traceId: string; spanId: string };
+  setAttribute(key: string, value: any): unknown;
+  setStatus(status: { code: number; message?: string }): unknown;
+  end(): void;
+}
+/** With no OpenTelemetry SDK registered the API hands out placeholder spans whose ids are all zeros. */
+const realIds = (span: OpenTelemetrySpan | undefined) => {
+  const ids = span?.spanContext();
+  return ids && /[1-9a-f]/.test(ids.traceId) ? ids : undefined;
+};
+const OTEL_ERROR = 2;
+
 function otlpValue(value: unknown): Record<string, unknown> {
   if (typeof value === "string") return { stringValue: value };
   if (typeof value === "boolean") return { boolValue: value };
@@ -195,6 +236,11 @@ function withoutAttachmentBytes<T>(value: T, seen = new WeakSet<object>()): T {
 export interface TracerOptions extends TraceExportOptions {
   exporters: TraceExporter[];
   mask: Masker;
+  /**
+   * Join the application's own OpenTelemetry tracing: every span here is also an OpenTelemetry
+   * span, nested under whatever span the application has active and exported by its pipeline.
+   */
+  openTelemetry?: OpenTelemetryApi | undefined;
   /** Called when a platform cannot be reached or rejects spans. Export problems never reach application code. */
   onError?: (error: Error) => void;
 }
@@ -217,7 +263,7 @@ export class Tracer {
   }
 
   get enabled(): boolean {
-    return this.options.exporters.length > 0;
+    return this.options.exporters.length > 0 || this.options.openTelemetry !== undefined;
   }
 
   /**
@@ -232,13 +278,21 @@ export class Tracer {
       output: (parent?.capture.output ?? true) && init.capture?.output !== false,
       attachments: init.capture?.attachments ?? parent?.capture.attachments ?? false,
     };
+    // With the bridge, the OpenTelemetry span is created first and ours takes its ids, so the two
+    // are the same span as far as any backend can tell.
+    const otel = this.options.openTelemetry;
+    const otelContext = otel?.context.active();
+    const otelSpan = otel?.trace.getTracer("@traceandscale/sdk").startSpan(name, {}, otelContext);
+    const otelIds = realIds(otelSpan);
+    const appParent = parent ? undefined : realIds(otel?.trace.getSpan(otelContext));
+    const parentSpanId = parent?.record.spanId ?? appParent?.spanId;
     const userId = init.userId ?? parent?.record.userId;
     const sessionId = init.sessionId ?? parent?.record.sessionId;
     const tags = init.tags ?? parent?.record.tags;
     const record: SpanRecord = {
-      traceId: parent?.record.traceId ?? randomBytes(16).toString("hex"),
-      spanId: randomBytes(8).toString("hex"),
-      ...(parent ? { parentSpanId: parent.record.spanId } : {}),
+      traceId: otelIds?.traceId ?? parent?.record.traceId ?? randomBytes(16).toString("hex"),
+      spanId: otelIds?.spanId ?? randomBytes(8).toString("hex"),
+      ...(parentSpanId ? { parentSpanId } : {}),
       name,
       kind: init.kind ?? "span",
       startTime: Date.now(),
@@ -262,8 +316,10 @@ export class Tracer {
       },
     };
 
+    const run = () => active.run({ tracer: this, record, capture }, () => fn(handle));
     try {
-      const result = await active.run({ tracer: this, record, capture }, () => fn(handle));
+      // Inside the OpenTelemetry context too, so spans the application starts in `fn` nest under this one.
+      const result = await (otel && otelSpan ? otel.context.with(otel.trace.setSpan(otelContext, otelSpan), run) : run());
       // What the block returned is its output, unless the block said otherwise.
       if (record.output === undefined && result !== undefined) record.output = result;
       return result;
@@ -272,14 +328,14 @@ export class Tracer {
       throw error;
     } finally {
       record.endTime = Date.now();
-      const sent = this.finish(record, capture);
+      const sent = this.finish(record, capture, otelSpan);
       // Only "blocking" mode ever makes application code wait on a platform, and only at the end of a trace.
       if (sent) await sent;
     }
   }
 
   /** Queue a finished span. Returns a promise only when the caller is meant to wait for delivery. */
-  private finish(record: SpanRecord, capture: Required<CaptureOptions>): Promise<void> | undefined {
+  private finish(record: SpanRecord, capture: Required<CaptureOptions>, otelSpan?: OpenTelemetrySpan): Promise<void> | undefined {
     if (!this.enabled) return undefined;
     const mode = this.options.mode ?? "buffered";
     const mask = this.options.mask;
@@ -301,6 +357,16 @@ export class Tracer {
     if (record.output !== undefined) record.output = snapshot(record.output);
     if (record.metadata) record.metadata = snapshot(record.metadata);
     if (record.error) record.error = mask(record.error);
+    if (otelSpan) {
+      // The application's pipeline gets the same masked values our own exporters do.
+      for (const [key, value] of Object.entries(genericAttributes(record))) {
+        const simple = typeof value === "string" || typeof value === "number" || typeof value === "boolean" || Array.isArray(value);
+        otelSpan.setAttribute(key, simple ? value : JSON.stringify(value));
+      }
+      if (record.error) otelSpan.setStatus({ code: OTEL_ERROR, message: record.error });
+      otelSpan.end();
+    }
+    if (!this.options.exporters.length) return undefined;
     this.buffer.push(record);
     if (mode !== "buffered" && !record.parentSpanId) {
       // The outermost span just ended: the trace is complete, send it whole.

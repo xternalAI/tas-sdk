@@ -1,7 +1,7 @@
 import type { PlatformAdapter } from "./adapter.ts";
 import type { MaskingConfig } from "./masking.ts";
 import type { PromptDefinition } from "./prompt/model.ts";
-import type { TraceExportOptions } from "./trace.ts";
+import type { OpenTelemetryApi, TraceExportOptions } from "./trace.ts";
 
 export interface GatewayConfig {
   /** Any OpenAI-compatible endpoint: LiteLLM, Braintrust Gateway, Langfuse AI Gateway, a provider directly. */
@@ -48,6 +48,14 @@ export interface TasConfig {
    * (for example while trialling a new vendor), or pass false to turn tracing off.
    */
   tracing?: PlatformAdapter[] | false;
+  /**
+   * Join your application's existing OpenTelemetry tracing. Pass the API module:
+   * `import * as api from "@opentelemetry/api"`. Spans from this SDK then nest under your active
+   * span, your spans started inside `trace()` or a tool nest under ours, and everything is exported
+   * by your OpenTelemetry pipeline (masked first). Independent of `tracing`: set `tracing: false` if
+   * your pipeline already delivers to the platform, or you will have each span there twice.
+   */
+  openTelemetry?: OpenTelemetryApi;
   /**
    * When spans are sent. Default `{ mode: "buffered" }`: in the background, so tracing never adds to
    * your response time. See `ExportMode` for "immediate" and "blocking".
