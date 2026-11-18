@@ -1,6 +1,7 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { PromptRegistry, RemotePrompt } from "./adapter.ts";
+import { inScope, type PromptVersions } from "./config.ts";
 import { loadPrompts, promptPath, writePrompt } from "./prompt/file.ts";
 import { hashPrompt, type PromptDefinition } from "./prompt/model.ts";
 import { findNonPortable } from "./prompt/template.ts";
@@ -79,6 +80,17 @@ export interface SyncContext {
   canonical: "repo" | "platform";
   /** Lock section name. Default "default". */
   target?: string;
+  /** Only prompts whose names are in this scope exist as far as sync is concerned. See `TasConfig.scope`. */
+  scope?: string | string[];
+}
+
+/**
+ * The platform versions the prompts in `dir` were last synced as, for `TasConfig.promptVersions`.
+ * `profile` is the lockfile section: the CLI profile that did the syncing ("default" for a single config).
+ */
+export async function loadPromptVersions(dir: string, profile = "default"): Promise<PromptVersions | undefined> {
+  const section = (await readLock(dir)).targets[profile];
+  return section && { platform: section.platform, prompts: section.prompts };
 }
 
 async function readLock(dir: string): Promise<Lock> {
@@ -117,10 +129,10 @@ function classify(local: string | undefined, remote: string | undefined, locked:
 async function gather(ctx: SyncContext) {
   const [locals, remoteList, lock] = await Promise.all([loadPrompts(ctx.dir), ctx.registry.list(), readLock(ctx.dir)]);
   const locked = section(lock, ctx);
-  const local = new Map(locals.map((d) => [d.name, d]));
-  const names = [...new Set([...local.keys(), ...remoteList.map((r) => r.name)])].sort();
-  // Gone from both sides: nothing left to remember.
-  for (const name of Object.keys(locked)) if (!names.includes(name)) delete locked[name];
+  const local = new Map(locals.filter((d) => inScope(d.name, ctx.scope)).map((d) => [d.name, d]));
+  const names = [...new Set([...local.keys(), ...remoteList.map((r) => r.name).filter((name) => inScope(name, ctx.scope))])].sort();
+  // Gone from both sides: nothing left to remember. Entries outside the scope are someone else's and are left alone.
+  for (const name of Object.keys(locked)) if (inScope(name, ctx.scope) && !names.includes(name)) delete locked[name];
   const entries = await Promise.all(
     names.map(async (name): Promise<StatusEntry> => {
       const l = local.get(name);
@@ -147,15 +159,20 @@ export interface SyncOptions {
   force?: boolean;
   /** Push only: labels to point at the pushed version. */
   labels?: string[];
-  /** Limit to these prompt names. */
+  /** Limit to these prompt names. A name ending in "/" means everything under that folder. */
   only?: string[];
+  /** Work out what would happen and return it, without writing to the platform, the files or the lockfile. */
+  dryRun?: boolean;
 }
+
+/** Whether a prompt is among the ones a command was limited to. */
+export const selected = (name: string, only: string[] | undefined) => inScope(name, only);
 
 export async function push(ctx: SyncContext, options: SyncOptions = {}): Promise<SyncResult[]> {
   const { entries, lock, locked } = await gather(ctx);
   const results: SyncResult[] = [];
   for (const entry of entries) {
-    if (options.only && !options.only.includes(entry.name)) continue;
+    if (!selected(entry.name, options.only)) continue;
     const { name, state, local, remote } = entry;
     if (state === "unreadable") {
       results.push({ name, action: "skipped", reason: "unreadable", error: entry.error! });
@@ -187,6 +204,15 @@ export async function push(ctx: SyncContext, options: SyncOptions = {}): Promise
       results.push({ name, action: "unchanged", version: remote!.version });
       continue;
     }
+    if (options.dryRun) {
+      results.push({
+        name,
+        action: state === "in-sync" ? "unchanged" : "pushed",
+        ...(remoteMoved || state === "deleted-remotely" ? { overwrote: "remote" as const } : {}),
+        ...(nonPortable.length ? { nonPortable } : {}),
+      });
+      continue;
+    }
     const pushed = await ctx.registry.push(local, {
       ...(options.labels ? { labels: options.labels } : {}),
       ...(options.force ? { force: true } : {}),
@@ -200,7 +226,7 @@ export async function push(ctx: SyncContext, options: SyncOptions = {}): Promise
       ...(nonPortable.length ? { nonPortable } : {}),
     });
   }
-  await writeLock(ctx.dir, lock);
+  if (!options.dryRun) await writeLock(ctx.dir, lock);
   return results;
 }
 
@@ -208,7 +234,7 @@ export async function pull(ctx: SyncContext, options: SyncOptions = {}): Promise
   const { entries, lock, locked } = await gather(ctx);
   const results: SyncResult[] = [];
   for (const entry of entries) {
-    if (options.only && !options.only.includes(entry.name)) continue;
+    if (!selected(entry.name, options.only)) continue;
     const { name, state, remote } = entry;
     if (state === "unreadable") {
       results.push({ name, action: "skipped", reason: "unreadable", error: entry.error! });
@@ -217,7 +243,7 @@ export async function pull(ctx: SyncContext, options: SyncOptions = {}): Promise
     if (!remote) {
       // Deleted on the platform. If the platform is the truth the file goes too (git still has it).
       if (state === "deleted-remotely" && (ctx.canonical === "platform" || options.force)) {
-        await rm(promptPath(ctx.dir, name), { force: true });
+        if (!options.dryRun) await rm(promptPath(ctx.dir, name), { force: true });
         delete locked[name];
         results.push({ name, action: "removed", overwrote: "local" });
       } else {
@@ -236,7 +262,7 @@ export async function pull(ctx: SyncContext, options: SyncOptions = {}): Promise
       continue;
     }
     const nonPortable = findNonPortable(remote.definition); // pulled anyway: the file should show what is really there
-    if (state !== "in-sync") await writePrompt(ctx.dir, remote.definition);
+    if (state !== "in-sync" && !options.dryRun) await writePrompt(ctx.dir, remote.definition);
     locked[name] = { hash: hashPrompt(remote.definition), version: remote.version };
     results.push({
       name,
@@ -246,7 +272,7 @@ export async function pull(ctx: SyncContext, options: SyncOptions = {}): Promise
       ...(nonPortable.length ? { nonPortable } : {}),
     });
   }
-  await writeLock(ctx.dir, lock);
+  if (!options.dryRun) await writeLock(ctx.dir, lock);
   return results;
 }
 

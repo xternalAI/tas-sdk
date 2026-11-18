@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { TasConfig } from "./config.ts";
+import { resolveProfile, type TasConfig, type TasProfiles } from "./config.ts";
 import { type EvaluateOptions, type ExperimentResult, evaluate } from "./eval.ts";
 import { createMasker, type Masker } from "./masking.ts";
 import { hashPrompt, type PromptDefinition, parsePrompt, type ResolvedPrompt } from "./prompt/model.ts";
@@ -157,8 +157,11 @@ export interface TasClient<P extends PromptShapes<P> = PromptMap> {
  * masking rules and caches. There is no global state, so any number of
  * clients (one per tenant, per environment, per vendor) can live in one process.
  */
-export function createClient<P extends PromptShapes<P> = PromptMap>(config: TasConfig): TasClient<P> {
-  return createUntypedClient(config) as unknown as TasClient<P>;
+export function createClient<P extends PromptShapes<P> = PromptMap>(config: TasConfig): TasClient<P>;
+/** From a profiles config (the shape `tas.config.ts` often has): the named profile, or its default. */
+export function createClient<P extends PromptShapes<P> = PromptMap>(config: TasProfiles, profile?: string): TasClient<P>;
+export function createClient<P extends PromptShapes<P> = PromptMap>(config: TasConfig | TasProfiles, profile?: string): TasClient<P> {
+  return createUntypedClient(resolveProfile(config, profile).config) as unknown as TasClient<P>;
 }
 
 /** The implementation. Prompt typing is a compile-time layer over it; nothing here depends on `P`. */
@@ -200,7 +203,16 @@ function createUntypedClient(config: TasConfig): TasClient {
 
   const fromLocal = (name: string): ResolvedPrompt | undefined => {
     const definition = local.get(name);
-    return definition && { definition, hash: hashPrompt(definition), source: "local" };
+    if (!definition) return undefined;
+    const hash = hashPrompt(definition);
+    // The lockfile says which platform version this exact content was synced as: enough to link traces to it.
+    const synced = config.promptVersions?.platform === config.platform.id ? config.promptVersions.prompts[name] : undefined;
+    return {
+      definition,
+      hash,
+      source: "local",
+      ...(synced?.hash === hash ? { remote: { platform: config.platform.id, version: synced.version, labels: [] } } : {}),
+    };
   };
 
   /** Returns undefined when the platform has no such prompt; throws when the platform is unreachable. */
@@ -244,7 +256,15 @@ function createUntypedClient(config: TasConfig): TasClient {
       if (!found && !pinned) found = fromLocal(name);
     }
     if (!found) {
-      const at = pin.version !== undefined ? ` at version "${pin.version}"` : pin.label !== undefined ? ` at label "${pin.label}"` : "";
+      const at =
+        pin.version !== undefined
+          ? ` at version "${pin.version}"`
+          : pin.label !== undefined
+            ? ` at label "${pin.label}"`
+            : // Nothing was asked for, so the platform was asked for the default label: say which, it is the usual culprit.
+              registry
+              ? ` at the default label "${defaultLabel}" (set \`defaultLabel\` if your platform uses another name), nor among the bundled prompts`
+              : " among the bundled prompts";
       throw new PromptNotFoundError(`prompt "${name}" not found${at} (canonical: ${canonical})`);
     }
     if (found.definition.archived && !options.allowArchived) {
@@ -298,7 +318,7 @@ function createUntypedClient(config: TasConfig): TasClient {
       const label = own.label ?? outer?.label;
       return overrides.run({ ...(label !== undefined ? { label } : {}), prompts }, fn);
     },
-    evaluate: (name, options) => evaluate({ platform: config.platform, trace: (n, o, fn) => tracer.span(n, o, fn) }, name, options),
+    evaluate: (name, options) => evaluate({ platform: config.platform, mask, trace: (n, o, fn) => tracer.span(n, o, fn) }, name, options),
     flush: () => tracer.flush(),
     async close() {
       cache.clear();

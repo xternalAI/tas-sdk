@@ -97,12 +97,12 @@ describe("prompts", () => {
     expect(await run("prompts", "push", "greet")).toEqual({ code: 0, out: "pushed     greet  @1\n" });
     expect(await run("prompts", "push")).toEqual({
       code: 1,
-      out: "unchanged  greet  @1\nrefused    loopy  (non-portable template syntax; use --force)\n           not portable: {{#a}}  {{/a}}\n",
+      out: "refused    loopy  (non-portable template syntax; use --force)\n           not portable: {{#a}}  {{/a}}\n1 unchanged\n",
     });
     expect((await run("prompts", "push", "--force")).out).toMatch(/pushed {5}loopy {2}@1\n {11}not portable/);
     expect(await run("prompts", "pull")).toEqual({
       code: 0,
-      out: "unchanged  greet  @1\nunchanged  loopy  @1\n           not portable: {{#a}}  {{/a}}\n",
+      out: "unchanged  loopy  @1\n           not portable: {{#a}}  {{/a}}\n1 unchanged\n",
     });
   });
 });

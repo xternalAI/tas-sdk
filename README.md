@@ -33,7 +33,7 @@ const { output } = await tas.run("support/triage", { variables: { company: "Acme
 
 > **Status: 0.x.** Every adapter passes one conformance suite against the real service, but the API
 > may still change between minor versions. Every caveat is written down in
-> [docs/decisions.md](docs/decisions.md); the main ones are [listed below](#caveats).
+> [docs/decisions.md](https://github.com/xternalAI/tas-sdk/blob/main/docs/decisions.md); the main ones are [listed below](#caveats).
 
 ## Contents
 
@@ -85,8 +85,17 @@ langfuse({ publicKey, secretKey, baseURL: "https://us.cloud.langfuse.com" }); //
 langsmith({ apiKey, project: "support" }); // project receives traces
 ```
 
-Credentials are always passed in. The SDK never reads environment variables itself, so one process
-can hold any number of keys.
+Credentials are always passed in. Neither the SDK nor the `tas` command reads environment variables
+or loads a `.env` file: your config file decides where values come from. If you keep them in a
+`.env`, load it yourself, for example with `process.loadEnvFile()` at the top of `tas.config.ts` or
+`node --env-file=.env`.
+
+**Sharing a platform project.** If other applications keep prompts in the same project, set a
+scope and the CLI and studio will neither show nor touch anything outside it:
+
+```ts
+export default defineConfig({ platform, scope: "support/" }); // or several: ["support/", "billing/"]
+```
 
 `canonical` decides who wins:
 
@@ -148,11 +157,17 @@ messages:
 **Syncing:**
 
 ```bash
-tas prompts status                  # compare files with the platform
-tas prompts push --label production # create versions; point the label at them
-tas prompts pull                    # bring edits made in the vendor's UI back as file diffs
-tas prompts check                   # what would each platform not store natively?
+tas prompts status                           # compare files with the platform
+tas prompts push --dry-run                   # what would be sent, without sending it
+tas prompts push                             # create versions for what changed
+tas prompts push support/ --label production # a folder; point the label at its versions
+tas prompts pull                             # bring edits made in the vendor's UI back as file diffs
+tas prompts check                            # what would each platform not store natively?
 ```
+
+A name ending in `/` means every prompt under that folder. `--label` needs names, a folder, or
+`--all`: a label decides what production serves, so it is never applied to every prompt just
+because the names were left out.
 
 Pushing unchanged content creates nothing. A `tas.lock.json` beside the prompts records the last
 state both sides agreed on; commit it.
@@ -297,6 +312,22 @@ createClient({
 });
 ```
 
+**Linking traces to prompt versions.** With repo-canonical prompts the platform did not serve the
+prompt, so it cannot tell which of its versions a trace used. Pass the lockfile and it can, at no
+runtime cost:
+
+```ts
+import { loadPrompts, loadPromptVersions } from "@traceandscale/sdk";
+
+createClient({
+  platform,
+  prompts: await loadPrompts("./prompts"),
+  promptVersions: await loadPromptVersions("./prompts"), // second argument: the profile that synced, if you use profiles
+});
+```
+
+A prompt edited since the last `tas prompts push` is left unlinked until it is pushed again.
+
 With `openTelemetry`, spans from this SDK nest under your active span and are exported by your own
 pipeline (masked first). If that pipeline already delivers to the platform, set `tracing: false`.
 
@@ -305,6 +336,7 @@ pipeline (masked first). If that pipeline already delivers to the platform, set 
 ```ts
 // evals/triage.eval.ts
 import { defineEval, exactMatch, judge, loadDataset, type TasClient } from "@traceandscale/sdk";
+// For a dataset in a folder, say its full name: loadDataset(path, { name: "support/tickets" })
 
 export default async (tas: TasClient) =>
   defineEval({
@@ -327,6 +359,15 @@ tas eval evals/*.eval.ts   # exits 1 when a threshold is missed
 Or in code: `const result = await tas.evaluate("triage", { data, task, scorers })`. The task and
 the scorers run on your machine, so results are the same whichever vendor stores them. Scores are
 numbers from 0 to 1. The run is stored as an experiment on the platform, with a trace per item.
+
+Two things to know about what an evaluation sends:
+
+- **It is masked like a trace.** Your masking rules apply to the inputs, expected values, outputs,
+  metadata, errors and score comments of the reported experiment. That includes the copy of the
+  dataset items the experiment writes, so a value your rules redact is redacted in that dataset on
+  the platform too. Your files, and the result returned to your code, keep the real values.
+- **Each item also appears in the project's ordinary traces**, tagged `eval`, with the full tree of
+  model calls and tools underneath. The experiment holds the row; the trace shows how it was produced.
 
 Datasets are JSONL files, one item per line:
 
@@ -369,6 +410,10 @@ Labels point at the same content afterwards. Each version is read back and compa
 again creates nothing. Traces and past experiments are not moved. During a switch,
 `tracing: [oldPlatform, newPlatform]` sends traces to both.
 
+The same profiles work in application code: `createClient(config)` uses the default profile and
+`createClient(config, "new")` a named one, so which platform an application talks to can be one
+argument, wherever you choose to read it from.
+
 ## Several tenants in one process
 
 A client holds no global state: its own platform, gateway, masking rules, caches and tracer.
@@ -397,6 +442,8 @@ tas studio
 --config <path>     config file (default: tas.config.ts)
 --profile <name>    which profile of a multi-profile config to use
 --label <label>     push: point this label at the pushed version (repeatable)
+--all               push: with --label and no names, label every prompt in scope
+--dry-run           push, pull: report what would happen and change nothing
 --force             let the non-canonical side win; push non-portable template syntax
 --yes               delete: confirm
 --from, --to        migrate: the profiles to copy from and to
@@ -426,11 +473,11 @@ difference. The difference is only in what the vendor's own UI and playground sh
 | Names with `/` | native | native | stored with `--` in place of `/` |
 | Listing versions (for `migrate --history`) | not available | yes | yes |
 
-Field-by-field detail is in [docs/platform-mapping.md](docs/platform-mapping.md).
+Field-by-field detail is in [docs/platform-mapping.md](https://github.com/xternalAI/tas-sdk/blob/main/docs/platform-mapping.md).
 
 ## Caveats
 
-The complete list, each one pinned by a test, is [docs/decisions.md](docs/decisions.md). The ones
+The complete list, each one pinned by a test, is [docs/decisions.md](https://github.com/xternalAI/tas-sdk/blob/main/docs/decisions.md). The ones
 most likely to matter:
 
 - **LangSmith experiments rely on an endpoint LangSmith plans to remove.** Experiments are stored
@@ -438,8 +485,9 @@ most likely to matter:
   the v1 sessions endpoint will be removed on **2027-07-01**. Its newer one-call experiment upload
   is not a replacement yet: it only accepts datasets that it created itself, which could then not
   be pushed to or edited normally. Before that date this adapter has to move; until then it works,
-  and prompts, tracing and datasets on LangSmith are not affected. LangSmith experiments also
-  return no URL.
+  and prompts, tracing and datasets on LangSmith are not affected.
+- **Only Braintrust returns a link to an experiment.** On Langfuse and LangSmith `tas eval` prints
+  the experiment's name; find it under the dataset in their UI.
 - **Version history cannot be migrated out of Braintrust.** We found no API that lists a prompt's
   versions. Labelled versions and the newest one migrate; history into Braintrust works.
 - **Braintrust labels are environments**, which are org-wide and must be created in Braintrust
@@ -456,10 +504,10 @@ most likely to matter:
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the commands and rules, [docs/architecture.md](docs/architecture.md)
+[CONTRIBUTING.md](https://github.com/xternalAI/tas-sdk/blob/main/CONTRIBUTING.md) has the commands and rules, [docs/architecture.md](https://github.com/xternalAI/tas-sdk/blob/main/docs/architecture.md)
 the map of the code. Offline tests run in CI on every push; tests against the real services are
 opt-in (`pnpm test:live`).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/xternalAI/tas-sdk/blob/main/LICENSE)

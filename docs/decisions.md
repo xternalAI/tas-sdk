@@ -82,6 +82,21 @@ Pinned by the "decisions: attachments" tests. Verified live on 2026-11-17: a pro
 - **Lockfile (`tas.lock.json`)** records the last synced hash per prompt and per profile, so one repo can mirror to several platforms. Repointing a profile at a different platform resets its section.
 - **Fetched prompts are cached for 60 seconds** by default; a stale copy is served if a refresh fails.
 
+## Sharing a project, and not changing more than you meant
+
+Pinned by `test/sync-safety.test.ts`. These came out of running a real application against a project shared with other prompts (2026-11-18), where an unscoped pull brought 34 foreign prompts into the repository and an unscoped `push --label` then labelled all of them on another platform.
+
+- **`scope` limits the CLI and the studio to part of a project**: names under a folder (`"support/"`) or exact names. Status, push, pull, check, migrate and the dataset commands neither show nor touch anything outside it, including a stray file. Lockfile entries outside the scope are kept. Runtime calls are not affected.
+- **A name ending in `/` means everything under that folder**, wherever a command takes names, including `--from/--to` migration.
+- **`--label` with no names is refused** unless `--all` is given. A label decides what production serves, so it is never applied to every prompt because the names were left out. *Changed in 0.2.0:* it used to label everything.
+- **`--dry-run` on push and pull reports what would happen and writes nothing**: no versions, no files, no lockfile. It refuses what the real run would refuse.
+- **Sync output lists what changed and counts the rest.** Unchanged prompts and prompts that exist only on the other side are counted. Everything is listed when you name prompts, when a label was applied, or when a prompt has something to say (a refusal, non-portable syntax).
+- **`createClient` accepts a profiles config** and an optional profile name, by the same rule the CLI uses for `--profile` (`resolveProfile`).
+- **Nothing loads a `.env` file or reads the environment**, neither the library nor the `tas` command. Where values come from is the application's decision, made in its config file.
+- **A prompt that is not found says where it was looked for**, naming the default label when that is what was asked, since a platform that calls it something other than `production` is the usual cause.
+- **`promptVersions` links traces of bundled prompts to the platform version they were synced as**, read from the lockfile by `loadPromptVersions`. The link is made only while the bundled content still has the hash that was synced, and only for the platform the lockfile section belongs to. It costs nothing at runtime.
+- **`loadDataset(path, { name })`** exists because a path cannot say where the datasets directory starts: without the name a dataset in a folder is named after its file alone, and an evaluation on it is reported against a different dataset on the platform (found in the same run).
+
 ## Migration between platforms
 
 Pinned by `test/migrate.test.ts`. Verified live on 2026-11-18: every fixture prompt, with two versions and a label, moved Langfuse -> LangSmith -> Braintrust intact, and a second run created nothing.
@@ -170,6 +185,9 @@ Pinned by `test/trace.test.ts`. Verified live on 2026-11-17: one traced, masked,
 
 Pinned by `test/eval.test.ts`. Verified live on 2026-11-17: the same three-item run, including an errored item and score comments, was stored as an experiment on all three platforms, twice against the same dataset.
 
+- **An experiment is masked like a trace.** The client's masking is applied to what `evaluate` reports: inputs, expected values, outputs, item and run metadata, error messages and score comments. Scores, ids and timings are not changed, and the result returned to the caller keeps the real values. *Changed in 0.2.0:* reported experiments were not masked before. *Caveat:* every reporter also writes the run's items into the dataset on the platform, so a value the rules redact is redacted in that dataset there too, even if `tas datasets push` had sent it unmasked; a later `tas datasets pull` would then bring the redacted value into the file. Push the dataset again to restore it, or keep masked fields out of datasets.
+- **Each evaluated item is also an ordinary trace, tagged `eval`**, in addition to its row in the experiment. That is deliberate: the experiment row is the result, the trace is how it was produced (model calls, tools). Filter on the tag to separate eval traffic from real traffic.
+- **Only Braintrust returns a link to the experiment.** Langfuse and LangSmith return none; the CLI prints the experiment's name.
 - **The task and the scorers always run in your process.** Platforms only store the result, so numbers do not change with the vendor. *Caveat:* platform-side evaluators (LLM judges configured in a vendor UI, online evals) are not used or triggered.
 - **A score is a number from 0 to 1.** Booleans count as 1 or 0; `null`/`undefined` means "does not apply" and is left out of the mean. Anything else, including out-of-range numbers, is recorded as an error for that scorer on that item. The range is Braintrust's hard limit (verified live), adopted everywhere so a run is portable.
 - **Scorers are plain functions** `({ input, output, expected, metadata }) => score`, named by their key in `scorers`. The same shape as `autoevals`, so those work unchanged. Built in: `exactMatch`, `includes`, and `judge`, which runs an ordinary prompt as an LLM judge.

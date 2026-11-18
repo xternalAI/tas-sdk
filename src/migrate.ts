@@ -1,4 +1,5 @@
 import type { PromptRegistry } from "./adapter.ts";
+import { inScope } from "./config.ts";
 import type { DatasetStore } from "./dataset.ts";
 import { hashPrompt } from "./prompt/model.ts";
 
@@ -10,7 +11,7 @@ import { hashPrompt } from "./prompt/model.ts";
  */
 
 export interface MigrateOptions {
-  /** Limit to these names. Default: everything on the source. */
+  /** Limit to these names; one ending in "/" means everything under that folder. Default: everything on the source. */
   only?: string[];
   /**
    * Recreate every version, oldest first, instead of only the newest one and the ones labels point
@@ -47,9 +48,7 @@ export async function migratePrompts(
 ): Promise<PromptMigration[]> {
   if (options.history && !source.versions)
     throw new Error("the source platform cannot list prompt versions, so history cannot be migrated; run without --history");
-  const listed = (await source.list())
-    .filter((p) => !options.only || options.only.includes(p.name))
-    .sort((a, b) => (a.name < b.name ? -1 : 1));
+  const listed = (await source.list()).filter((p) => inScope(p.name, options.only)).sort((a, b) => (a.name < b.name ? -1 : 1));
   const results: PromptMigration[] = [];
 
   for (const { name, labels } of listed) {
@@ -137,7 +136,7 @@ export async function migrateDatasets(
   target: DatasetStore,
   options: Pick<MigrateOptions, "only"> = {},
 ): Promise<DatasetMigration[]> {
-  const names = (await source.list()).filter((name) => !options.only || options.only.includes(name)).sort();
+  const names = (await source.list()).filter((name) => inScope(name, options.only)).sort();
   const results: DatasetMigration[] = [];
   for (const name of names) {
     try {

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { PlatformAdapter } from "./adapter.ts";
 import { type Dataset, type DatasetItem, itemId } from "./dataset.ts";
+import type { Masker } from "./masking.ts";
 import type { RunOptions, RunResult } from "./run.ts";
 import type { SpanHandle, TraceOptions } from "./trace.ts";
 
@@ -137,7 +138,28 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 export interface EvalHost {
   platform: PlatformAdapter;
+  /** The client's masking. Applied to everything a run reports to a platform; what is returned to you is not masked. */
+  mask?: Masker;
   trace<T>(name: string, options: TraceOptions, fn: (span: SpanHandle) => T | Promise<T>): Promise<T>;
+}
+
+/** A copy of a run with everything that came from data or from the model masked. Ids, scores and timings are kept. */
+function masked(result: ExperimentResult, mask: Masker): ExperimentResult {
+  return {
+    ...result,
+    ...(result.metadata ? { metadata: mask(result.metadata) } : {}),
+    rows: result.rows.map((row) => ({
+      ...row,
+      input: mask(row.input),
+      ...(row.expected !== undefined ? { expected: mask(row.expected) } : {}),
+      ...(row.metadata ? { metadata: mask(row.metadata) } : {}),
+      ...(row.output !== undefined ? { output: mask(row.output) } : {}),
+      ...(row.error !== undefined ? { error: mask(row.error) } : {}),
+      scores: Object.fromEntries(
+        Object.entries(row.scores).map(([name, s]) => [name, { score: s.score, ...(s.comment ? { comment: mask(s.comment) } : {}) }]),
+      ),
+    })),
+  };
 }
 
 export async function evaluate(host: EvalHost, name: string, options: EvaluateOptions): Promise<ExperimentResult> {
@@ -225,9 +247,11 @@ export async function evaluate(host: EvalHost, name: string, options: EvaluateOp
   };
 
   const targets = options.report === false ? [] : (options.report ?? [host.platform]).filter((adapter) => adapter.experiments);
+  // Masked once for every platform, like traces: the same redacted run goes to each.
+  const reported = targets.length && host.mask ? masked(result, host.mask) : result;
   for (const adapter of targets) {
     try {
-      result.reports.push({ platform: adapter.id, ...(await adapter.experiments!.report(result)) });
+      result.reports.push({ platform: adapter.id, ...(await adapter.experiments!.report(reported)) });
     } catch (error) {
       result.reports.push({ platform: adapter.id, error: message(error) }); // the results are still returned to you
     }
