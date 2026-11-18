@@ -41,7 +41,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "tas": "./dist/bin.js"
+    "tas": "dist/bin.js"
   },
   "files": [
     "dist",
