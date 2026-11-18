@@ -13,10 +13,52 @@ export class PromptNotFoundError extends Error {}
 export class PromptArchivedError extends Error {}
 
 export interface GetPromptOptions {
+  /** A specific past or present version, by the platform's version id. Always asks the platform. */
   version?: string;
+  /** The version a label points at, such as "staging". Always asks the platform. */
   label?: string;
+  /** Another word for `label`, for platforms that call labels environments. Give one or the other. */
+  environment?: string;
   /** Return a prompt even if it is archived. Default false: archived prompts throw. */
   allowArchived?: boolean;
+}
+
+/** Which version of one prompt to use: a version id, or a label / environment. Not both. */
+export interface PromptPin {
+  version?: string;
+  label?: string;
+  environment?: string;
+}
+
+/**
+ * Which versions `withPromptOverrides` serves inside its block, without touching the calls there.
+ * `Names` narrows the keys of `prompts` when the client is typed.
+ */
+export interface PromptOverrides<Names extends string = string> {
+  /** The label every prompt in the block is read at, unless it is pinned below or by the call itself. */
+  label?: string;
+  /** Another word for `label`. Give one or the other. */
+  environment?: string;
+  /** Per prompt: a version id or a label. */
+  prompts?: Partial<Record<Names, PromptPin>>;
+}
+
+/** One pin with `environment` folded into `label`. Throws, naming `where`, when it asks for two things at once. */
+function normalisePin(pin: PromptPin, where: string): { version?: string; label?: string } {
+  if (pin.label !== undefined && pin.environment !== undefined && pin.label !== pin.environment) {
+    throw new Error(`${where}: "label" and "environment" are the same thing; got "${pin.label}" and "${pin.environment}"`);
+  }
+  const label = pin.label ?? pin.environment;
+  if (pin.version !== undefined && label !== undefined) {
+    throw new Error(`${where}: give a version or a label, not both (version "${pin.version}", label "${label}")`);
+  }
+  return { ...(pin.version !== undefined ? { version: pin.version } : {}), ...(label !== undefined ? { label } : {}) };
+}
+
+/** Overrides as the client keeps them: validated, with `environment` folded into `label`. */
+interface ActiveOverrides {
+  label?: string;
+  prompts: Record<string, { version?: string; label?: string }>;
 }
 
 /** Names of prompts that need no variables or placeholders, so their options argument may be omitted. */
@@ -92,6 +134,18 @@ export interface TasClient<P extends PromptShapes<P> = PromptMap> {
     name: string,
     options: EvaluateOptions<Input, Output, Expected>,
   ): Promise<ExperimentResult>;
+  /**
+   * Choose which prompt versions every call inside `fn` uses, without changing those calls: a
+   * label (environment) for all of them, a version or label per prompt, or both.
+   *
+   *   await tas.withPromptOverrides({ environment: "staging", prompts: { "support/triage": { version: "12" } } }, handler);
+   *
+   * A `version`, `label` or `environment` given on a call itself wins over the block; a per-prompt
+   * entry wins over the block's label; an inner block adds to an outer one. Overridden prompts are
+   * always read from the platform, and one that does not exist there throws: nothing falls back to
+   * another version silently. Applies to this client only, and follows async work started inside `fn`.
+   */
+  withPromptOverrides<T>(overrides: PromptOverrides<keyof P & string>, fn: () => T): T;
   /** Send any spans still waiting. Call before a short-lived process (script, serverless handler) exits. */
   flush(): Promise<void>;
   /** Flush and release anything this client holds. Called by the pool on eviction. */
@@ -133,13 +187,24 @@ function createUntypedClient(config: TasConfig): TasClient {
     ...(config.onTraceError ? { onError: config.onTraceError } : {}),
   });
 
+  // Per client, so one tenant's overrides can never reach another tenant's calls.
+  const overrides = new AsyncLocalStorage<ActiveOverrides>();
+
+  /** What a call asks for once overrides are applied: the call itself, then its prompt's entry, then the block's label. */
+  const pinFor = (name: string, options: GetPromptOptions): { version?: string; label?: string } => {
+    const own = normalisePin(options, `prompt "${name}"`);
+    if (own.version !== undefined || own.label !== undefined) return own;
+    const scope = overrides.getStore();
+    return scope?.prompts[name] ?? (scope?.label !== undefined ? { label: scope.label } : {});
+  };
+
   const fromLocal = (name: string): ResolvedPrompt | undefined => {
     const definition = local.get(name);
     return definition && { definition, hash: hashPrompt(definition), source: "local" };
   };
 
   /** Returns undefined when the platform has no such prompt; throws when the platform is unreachable. */
-  const fromRemote = async (name: string, options: GetPromptOptions): Promise<ResolvedPrompt | undefined> => {
+  const fromRemote = async (name: string, options: { version?: string; label?: string }): Promise<ResolvedPrompt | undefined> => {
     if (!registry) return undefined;
     const ref = options.version ? { name, version: options.version } : { name, label: options.label ?? defaultLabel };
     const key = JSON.stringify(ref);
@@ -164,20 +229,24 @@ function createUntypedClient(config: TasConfig): TasClient {
 
   const get = async (name: string, options: GetPromptOptions = {}): Promise<ResolvedPrompt> => {
     // An explicit version or label is a question only the platform can answer.
-    const pinned = options.version !== undefined || options.label !== undefined;
+    const pin = pinFor(name, options);
+    const pinned = pin.version !== undefined || pin.label !== undefined;
     let found: ResolvedPrompt | undefined;
     if (canonical === "repo" && !pinned) {
-      found = fromLocal(name) ?? (await fromRemote(name, options));
+      found = fromLocal(name) ?? (await fromRemote(name, pin));
     } else {
       try {
-        found = await fromRemote(name, options);
+        found = await fromRemote(name, pin);
       } catch (error) {
         // Platform down: an unpinned request may fall back to the bundled snapshot.
         if (pinned || !fromLocal(name)) throw error;
       }
       if (!found && !pinned) found = fromLocal(name);
     }
-    if (!found) throw new PromptNotFoundError(`prompt "${name}" not found (canonical: ${canonical})`);
+    if (!found) {
+      const at = pin.version !== undefined ? ` at version "${pin.version}"` : pin.label !== undefined ? ` at label "${pin.label}"` : "";
+      throw new PromptNotFoundError(`prompt "${name}" not found${at} (canonical: ${canonical})`);
+    }
     if (found.definition.archived && !options.allowArchived) {
       throw new PromptArchivedError(
         `prompt "${name}" is archived. Remove \`archived: true\` to restore it, or pass { allowArchived: true }.`,
@@ -212,6 +281,22 @@ function createUntypedClient(config: TasConfig): TasClient {
     ) {
       const [options, fn] = typeof optionsOrFn === "function" ? [{}, optionsOrFn] : [optionsOrFn, maybeFn!];
       return tracer.span(name, options, fn);
+    },
+    withPromptOverrides<T>(given: PromptOverrides, fn: () => T): T {
+      const outer = overrides.getStore();
+      const own = normalisePin(
+        {
+          ...(given.label !== undefined ? { label: given.label } : {}),
+          ...(given.environment !== undefined ? { environment: given.environment } : {}),
+        },
+        "withPromptOverrides",
+      );
+      const prompts = { ...outer?.prompts };
+      for (const [name, pin] of Object.entries(given.prompts ?? {})) {
+        if (pin) prompts[name] = normalisePin(pin, `withPromptOverrides: prompt "${name}"`);
+      }
+      const label = own.label ?? outer?.label;
+      return overrides.run({ ...(label !== undefined ? { label } : {}), prompts }, fn);
     },
     evaluate: (name, options) => evaluate({ platform: config.platform, trace: (n, o, fn) => tracer.span(n, o, fn) }, name, options),
     flush: () => tracer.flush(),
