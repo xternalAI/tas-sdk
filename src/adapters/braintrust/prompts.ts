@@ -242,7 +242,7 @@ async function fetchRow(
 ): Promise<Row | undefined> {
   let found: { objects: Row[] };
   try {
-    found = await http.request<{ objects: Row[] }>("GET", "/v1/prompt", {
+    found = await http.expect<{ objects: Row[] }>("GET", "/v1/prompt", {
       query: { project_id: await projectId(), slug: toSlug(name), ...selector },
     });
   } catch (error) {
@@ -255,7 +255,7 @@ async function fetchRow(
 
 /** Environment assignments live outside the prompt row (and outside the published OpenAPI spec). */
 async function assignments({ http }: BraintrustContext, promptId: string): Promise<Assignment[]> {
-  return (await http.request<{ objects: Assignment[] }>("GET", `/environment-object/prompt/${promptId}`)).objects;
+  return (await http.expect<{ objects: Assignment[] }>("GET", `/environment-object/prompt/${promptId}`)).objects;
 }
 
 /** A row as a `RemotePrompt`: decoded, with the environments that point at this exact version as its labels. */
@@ -272,7 +272,7 @@ async function listPrompts(context: BraintrustContext): Promise<{ name: string; 
   const out: { name: string; labels: string[] }[] = [];
   let after: string | undefined;
   for (;;) {
-    const page = await context.http.request<{ objects: Row[] }>("GET", "/v1/prompt", {
+    const page = await context.http.expect<{ objects: Row[] }>("GET", "/v1/prompt", {
       query: { project_id: await context.projectId(), limit: "100", starting_after: after },
     });
     const named = page.objects.map((row) => ({ row, name: row.slug })).filter(({ name }) => NAME.test(name));
@@ -297,7 +297,7 @@ async function pushPrompt(context: BraintrustContext, definition: PromptDefiniti
   }
 
   // Re-posting an existing slug appends a version.
-  const row = await http.request<Row>("POST", "/v1/prompt", {
+  const row = await http.expect<Row>("POST", "/v1/prompt", {
     body: { project_id: await context.projectId(), ...body, ...(labels.length ? { environment_slugs: labels } : {}) },
   });
   if (needsEnvelope && !unpackEnvelope(row.metadata)) {

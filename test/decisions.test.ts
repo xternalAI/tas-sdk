@@ -588,6 +588,23 @@ describe("decisions: Langfuse", () => {
     expect((await reg.get({ name: "plain" }))!.definition.tags).toEqual(["ours", "added-in-ui"]);
   });
 
+  it("a create call that succeeds with an empty reply fails clearly, instead of with a type error later", async () => {
+    const empty = (async () => new Response(null, { status: 200 })) as typeof fetch;
+    const reg = langfuse({ publicKey: "pk", secretKey: "sk", fetch: (async (url: URL | RequestInfo, init?: RequestInit) => ((init?.method ?? "GET") === "GET" ? new Response("{}", { status: 404 }) : empty(url, init))) as typeof fetch }).prompts!;
+    await expect(reg.push(fixtures[1]!)).rejects.toThrow("langfuse POST /v2/prompts succeeded but returned an empty reply");
+    const store = langfuse({ publicKey: "pk", secretKey: "sk", fetch: empty }).datasets!;
+    await expect(store.push({ name: "qa", items: [] })).rejects.toThrow(/POST \/v2\/datasets succeeded but returned an empty reply/);
+  });
+
+  it("something that is not a tool list under `tools` in a Langfuse config is kept as a setting, not dropped", async () => {
+    const fake = fakeLangfuse();
+    fake.store.set("odd", [{ name: "odd", version: 1, type: "text", prompt: "hi", config: { model: "gpt-5", tools: "auto", temperature: 0 }, labels: ["latest"], tags: [] }]);
+    const got = (await lf(fake).get({ name: "odd" }))!.definition;
+    expect(got).toMatchObject({ model: { id: "gpt-5", params: { tools: "auto", temperature: 0 } } });
+    expect(got.tools).toBeUndefined();
+    expect((await lf(fake).push(got)).version).toBe("1"); // and it round-trips: nothing to push
+  });
+
   it.each([
     ["multimodal content", { role: "user", content: [{ type: "text", text: "hi" }] }, /not plain text/],
     ["a developer-role message", { role: "developer", content: "x" }, /role "developer"/],

@@ -38,7 +38,7 @@ export function createContext(options: BraintrustOptions, error: ErrorFactory): 
 async function resolveProjectId(options: BraintrustOptions, http: Http, error: ErrorFactory): Promise<string> {
   if (options.projectId) return options.projectId;
   if (!options.projectName) throw error("braintrust: set projectId or projectName");
-  const found = await http.request<{ objects: { id: string }[] }>("GET", "/v1/project", {
+  const found = await http.expect<{ objects: { id: string }[] }>("GET", "/v1/project", {
     query: { project_name: options.projectName },
   });
   const id = found.objects[0]?.id;

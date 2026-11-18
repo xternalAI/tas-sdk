@@ -29,7 +29,7 @@ export function createDatasetStore(context: BraintrustContext): DatasetStore {
 /** Create the dataset if needed and upsert its rows by id. Returns Braintrust's id for it. */
 export async function upsertDataset({ http, projectId }: BraintrustContext, dataset: Dataset): Promise<string> {
   // Creating a dataset that exists returns the existing one.
-  const created = await http.request<{ id: string }>("POST", "/v1/dataset", {
+  const created = await http.expect<{ id: string }>("POST", "/v1/dataset", {
     body: { project_id: await projectId(), name: dataset.name, ...(dataset.description ? { description: dataset.description } : {}) },
   });
   if (dataset.items.length) {
@@ -42,7 +42,7 @@ export async function upsertDataset({ http, projectId }: BraintrustContext, data
 
 /** Names of the project's datasets. */
 async function listDatasets({ http, projectId }: BraintrustContext): Promise<string[]> {
-  const found = await http.request<{ objects: { name: string }[] }>("GET", "/v1/dataset", {
+  const found = await http.expect<{ objects: { name: string }[] }>("GET", "/v1/dataset", {
     query: { project_id: await projectId(), limit: "1000" },
   });
   return found.objects.map((d) => d.name);
@@ -50,7 +50,7 @@ async function listDatasets({ http, projectId }: BraintrustContext): Promise<str
 
 /** The named dataset with every row, or null if the project has none by that name. */
 async function pullDataset({ http, projectId }: BraintrustContext, name: string): Promise<Dataset | null> {
-  const found = await http.request<{ objects: { id: string; description?: string | null }[] }>("GET", "/v1/dataset", {
+  const found = await http.expect<{ objects: { id: string; description?: string | null }[] }>("GET", "/v1/dataset", {
     query: { project_id: await projectId(), dataset_name: name },
   });
   const dataset = found.objects[0];
@@ -65,7 +65,7 @@ async function pullDataset({ http, projectId }: BraintrustContext, name: string)
 async function fetchRows(http: Http, datasetId: string): Promise<DatasetRow[]> {
   const rows: DatasetRow[] = [];
   for (let cursor: string | undefined; ; ) {
-    const page = await http.request<{ events: DatasetRow[]; cursor?: string | null }>("POST", `/v1/dataset/${datasetId}/fetch`, {
+    const page = await http.expect<{ events: DatasetRow[]; cursor?: string | null }>("POST", `/v1/dataset/${datasetId}/fetch`, {
       body: { limit: 1000, ...(cursor ? { cursor } : {}) },
     });
     rows.push(...page.events);
