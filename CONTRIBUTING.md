@@ -59,6 +59,13 @@ Node 22.18 or newer. The code runs from TypeScript source directly; there is no 
 
 ## Releasing
 
-1. Set `version` in `package.json` and commit.
-2. `npm publish` (or `pnpm publish`). It lints, type-checks, runs the tests with coverage and builds first; `publishConfig` makes the scoped package public.
-3. Tag the commit: `git tag v<version> && git push --tags`.
+Maintainers only. The version in `package.json` is the single source of truth; the tag, the GitHub
+release and the npm version are derived from it by `.github/workflows/release.yml`.
+
+1. Bump the version in a pull request: `npm version patch --no-git-tag-version` (or `minor` / `major`).
+2. Merge it. The Release workflow sees a version npm does not have and waits for approval.
+3. Approve the run (Actions > Release > Review deployments). It runs the checks, publishes to npm,
+   creates the tag `v<version>` and the GitHub release with generated notes.
+
+Do not push version tags or run `npm publish` by hand. If a run fails after publishing, re-run it:
+it will only create the missing tag and release.
