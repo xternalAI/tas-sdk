@@ -1,0 +1,11 @@
+# Keeps the pinned GitHub Actions current. npm dependencies are not listed on purpose: security
+# updates for them are enabled in the repository settings, and routine bumps are done by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
