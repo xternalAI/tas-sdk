@@ -104,7 +104,14 @@ export function createStudioApi(ctx: StudioContext): (request: ApiRequest) => Pr
   const registry = ctx.config.platform.prompts;
   const syncContext = (): SyncContext => {
     if (!registry) throw new ApiError(400, `platform "${ctx.config.platform.id}" has no prompt registry`);
-    return { dir: ctx.dir, registry, platform: ctx.config.platform.id, canonical: ctx.config.canonical ?? "repo", target: ctx.target };
+    return {
+      dir: ctx.dir,
+      registry,
+      platform: ctx.config.platform.id,
+      canonical: ctx.config.canonical ?? "repo",
+      target: ctx.target,
+      ...(ctx.config.scope !== undefined ? { scope: ctx.config.scope } : {}),
+    };
   };
   const requireName = (name: string) => {
     if (!PROMPT_NAME.test(name))

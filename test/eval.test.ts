@@ -518,3 +518,60 @@ describe("tas eval", () => {
     expect((await run(["eval"])).out).toMatch(/eval needs at least one file/);
   });
 });
+
+describe("decisions: an experiment is masked like a trace", () => {
+  it("masks inputs, expected values, outputs, metadata, errors and comments in what is reported; your own result is untouched", async () => {
+    const reported: ExperimentResult[] = [];
+    const platform = { id: "spy", experiments: { report: async (result: ExperimentResult) => (reported.push(result), {}) } };
+    const client = createClient({
+      platform,
+      tracing: false,
+      masking: { keys: ["secret"], patterns: [/[a-z]+@[a-z.]+/g] },
+    });
+    const result = await client.evaluate<unknown, unknown, unknown>("masked", {
+      data: [
+        {
+          id: "a",
+          input: { body: "mail ann@example.com", secret: "x" },
+          expected: "ann@example.com",
+          metadata: { owner: "bob@example.com" },
+        },
+        { id: "b", input: "boom" },
+      ],
+      task: (input) => {
+        if (input === "boom") throw new Error("failed for cat@example.com");
+        return { reply: "to ann@example.com" };
+      },
+      scorers: { judge: () => ({ score: 1, comment: "mentions ann@example.com" }) },
+      metadata: { runBy: "dev@example.com" },
+    });
+
+    expect(reported).toHaveLength(1);
+    const sent = reported[0]!;
+    expect(sent.metadata).toEqual({ runBy: "[REDACTED]" });
+    expect(sent.rows[0]).toMatchObject({
+      id: "a",
+      input: { body: "mail [REDACTED]", secret: "[REDACTED]" },
+      expected: "[REDACTED]",
+      metadata: { owner: "[REDACTED]" },
+      output: { reply: "to [REDACTED]" },
+      scores: { judge: { score: 1, comment: "mentions [REDACTED]" } },
+    });
+    expect(sent.rows[1]).toMatchObject({ id: "b", input: "boom", error: "failed for [REDACTED]" });
+    expect(JSON.stringify(sent)).not.toContain("example.com");
+    // Scores, ids and the summary are what they were.
+    expect(sent.summary).toEqual(result.summary);
+
+    // What comes back to the caller is the real data.
+    expect(result.rows[0]).toMatchObject({ input: { body: "mail ann@example.com", secret: "x" }, output: { reply: "to ann@example.com" } });
+    expect(result.rows[1]!.error).toBe("failed for cat@example.com");
+  });
+
+  it("without masking rules the run is reported as it is", async () => {
+    const reported: ExperimentResult[] = [];
+    const platform = { id: "spy", experiments: { report: async (result: ExperimentResult) => (reported.push(result), {}) } };
+    const result = await createClient({ platform, tracing: false }).evaluate("plain", { data: [{ input: "a@b.c" }], task: (x) => x });
+    expect(reported[0]!.rows[0]).toMatchObject({ input: "a@b.c", output: "a@b.c" });
+    expect(result.reports).toEqual([{ platform: "spy" }]);
+  });
+});

@@ -27,4 +27,5 @@ export * from "./prompt/types.ts";
 export * from "./run.ts";
 export * from "./schema.ts";
 export * as sync from "./sync.ts";
+export { loadPromptVersions } from "./sync.ts";
 export * from "./trace.ts";

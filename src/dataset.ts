@@ -44,8 +44,17 @@ export function datasetPath(dir: string, name: string): string {
   return join(dir, ...name.split("/")) + DATASET_EXTENSION;
 }
 
-/** Load `<name>.dataset.jsonl`: one JSON object per line with `input`, and optionally `id`, `expected`, `metadata`. */
-export async function loadDataset<Input = unknown, Expected = unknown>(path: string): Promise<Dataset<Input, Expected>> {
+/**
+ * Load `<name>.dataset.jsonl`: one JSON object per line with `input`, and optionally `id`, `expected`, `metadata`.
+ *
+ * The dataset is named after the file. For a dataset in a folder, pass its full `name`
+ * ("support/tickets"): a path alone cannot say where the datasets directory starts, and an
+ * evaluation reported under the bare file name would land in a different dataset on the platform.
+ */
+export async function loadDataset<Input = unknown, Expected = unknown>(
+  path: string,
+  options: { name?: string } = {},
+): Promise<Dataset<Input, Expected>> {
   const lines = (await readFile(path, "utf8")).split("\n");
   const items: DatasetItem<Input, Expected>[] = [];
   lines.forEach((line, index) => {
@@ -62,6 +71,7 @@ export async function loadDataset<Input = unknown, Expected = unknown>(path: str
     items.push(item as DatasetItem<Input, Expected>);
   });
   const file = basename(path);
+  if (options.name) return { name: options.name, items };
   return { name: file.endsWith(DATASET_EXTENSION) ? file.slice(0, -DATASET_EXTENSION.length) : file.replace(/\.[^.]+$/, ""), items };
 }
 

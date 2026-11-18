@@ -211,7 +211,7 @@ describe("cli", () => {
     await writePrompt(join(dir, "p"), greet);
 
     expect(await run(["prompts", "status"])).toEqual({ code: 0, out: "local-only      team/greet\n" });
-    const pushed = await run(["prompts", "push", "--label", "production"]);
+    const pushed = await run(["prompts", "push", "--label", "production", "--all"]);
     expect(pushed).toMatchObject({ code: 0, out: "pushed     team/greet  @1\n" });
     const lock = JSON.parse(await readFile(join(dir, "p", "tas.lock.json"), "utf8"));
     expect(lock.targets.acme).toMatchObject({ platform: "memory", prompts: { "team/greet": { version: "1" } } });

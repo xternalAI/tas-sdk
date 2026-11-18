@@ -4,7 +4,7 @@ import { resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createClient } from "./client.ts";
-import type { TasConfig, TasProfiles } from "./config.ts";
+import { inScope, resolveProfile, type TasConfig, type TasProfiles } from "./config.ts";
 import { DATASET_EXTENSION, pullDataset, pushDataset } from "./dataset.ts";
 import type { EvalDefinition } from "./eval.ts";
 import { migrateDatasets, migratePrompts } from "./migrate.ts";
@@ -12,7 +12,7 @@ import { checkPortability } from "./portability.ts";
 import { loadPrompts, writePromptSchema } from "./prompt/file.ts";
 import { generatePromptTypes } from "./prompt/types.ts";
 import { startStudio } from "./studio/server.ts";
-import { pull, push, remove, type SyncContext, type SyncResult, status } from "./sync.ts";
+import { pull, push, remove, type SyncContext, type SyncResult, selected, status } from "./sync.ts";
 
 /**
  * The `tas` command line. `runCli` is the whole program as a function: it takes arguments and
@@ -24,12 +24,16 @@ import { pull, push, remove, type SyncContext, type SyncResult, status } from ".
 
 export const USAGE = `tas prompts <status|check|pull|push|delete|migrate|schema|types> [names...]
 
+  A name ending in "/" means every prompt under that folder: tas prompts push support/
+  With "scope" set in the config, commands only see prompts and datasets inside it.
+
   status   compare prompt files with the platform
   check    say what each prompt would not store natively on Braintrust, Langfuse and
            LangSmith, without contacting any of them. Exits 1 if a prompt cannot be
            stored somewhere at all.
-  pull     platform -> files
-  push     files -> platform
+  pull     platform -> files. Add --dry-run to see what it would write.
+  push     files -> platform. Add --dry-run to see what it would send.
+           With --label and no names it refuses, unless --all says every prompt is meant.
   delete   permanently delete the named prompts: every version on the platform,
            plus the local file. To retire a prompt reversibly, set
            "archived: true" in its file and push instead.
@@ -65,6 +69,8 @@ Options
   --config <path>    config file (default: tas.config.ts)
   --profile <name>   which profile of a multi-profile config to use
   --label <label>    push: point this label at the pushed version (repeatable)
+  --all              push: with --label and no names, label every prompt in scope
+  --dry-run          push, pull: report what would happen and change nothing
   --force            let the non-canonical side overwrite the canonical one, and push
                      prompts that use non-portable template syntax
   --yes              delete: confirm. Without it, delete only lists what it would remove
@@ -88,6 +94,8 @@ interface Flags {
   config: string | undefined;
   profile: string | undefined;
   label: string[] | undefined;
+  all: boolean;
+  dryRun: boolean;
   force: boolean;
   yes: boolean;
   port: string | undefined;
@@ -126,14 +134,13 @@ async function loadConfig(
   if (!file || !existsSync(file)) throw new UsageError(`no config found (looked for ${path ?? CONFIG_NAMES.join(", ")})`);
   const loaded = ((await import(pathToFileURL(file).href)) as { default?: TasConfig | TasProfiles }).default;
   if (!loaded) throw new UsageError(`${file} has no default export`);
-  if ("profiles" in loaded) {
-    const name = profile ?? loaded.default;
-    const config = loaded.profiles[name];
-    if (!config) throw new UsageError(`no profile "${name}" (have: ${Object.keys(loaded.profiles).join(", ")})`);
-    return { config, target: name };
+  if (profile && !("profiles" in loaded)) throw new UsageError(`--profile given but ${file} defines a single config`);
+  try {
+    const resolved = resolveProfile(loaded, profile);
+    return { config: resolved.config, target: resolved.name };
+  } catch (error) {
+    throw new UsageError(error instanceof Error ? error.message : String(error));
   }
-  if (profile) throw new UsageError(`--profile given but ${file} defines a single config`);
-  return { config: loaded, target: "default" };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -151,6 +158,7 @@ function syncContext(inv: Invocation): SyncContext {
     platform: inv.config.platform.id,
     canonical: inv.config.canonical ?? "repo",
     target: inv.target,
+    ...(inv.config.scope !== undefined ? { scope: inv.config.scope } : {}),
   };
 }
 
@@ -162,17 +170,48 @@ const REASONS: Record<NonNullable<SyncResult["reason"]>, (r: SyncResult) => stri
   unreadable: (r) => `cannot be read from the platform: ${r.error}`,
 };
 
-/** Print one line per prompt and return the exit code: 1 if anything was refused. */
-function reportSync(results: SyncResult[], io: CliIO): number {
+const WOULD: Partial<Record<SyncResult["action"], string>> = { pushed: "would push", pulled: "would pull", removed: "would remove" };
+
+/**
+ * Print what a sync did and return the exit code: 1 if anything was refused.
+ *
+ * Prompts that needed nothing (unchanged, or only on the other side) are counted, not listed, so a
+ * change cannot hide in a long list. Naming prompts on the command line lists every one of them.
+ */
+function reportSync(results: SyncResult[], inv: Invocation, otherSide: string): number {
+  const { io } = inv;
+  let unchanged = 0;
+  let elsewhere = 0;
   for (const r of results) {
-    const note = r.reason ? REASONS[r.reason](r) : r.overwrote ? `overwrote ${r.overwrote} change` : "";
-    io.log(`${r.action.padEnd(10)} ${r.name}${r.version ? `  @${r.version}` : ""}${note ? `  (${note})` : ""}`);
-    if (r.nonPortable) io.log(`           not portable: ${r.nonPortable.join("  ")}`);
+    // Listed anyway: anything with something to say, and everything when a label was applied, since that changed it.
+    const quiet = !inv.args.length && !inv.flags.label && !r.reason && !r.nonPortable;
+    if (quiet && r.action === "unchanged") unchanged++;
+    else if (quiet && r.action === "skipped") elsewhere++;
+    else {
+      const note = r.reason ? REASONS[r.reason](r) : r.overwrote ? `overwrote ${r.overwrote} change` : "";
+      const action = (inv.flags.dryRun && WOULD[r.action]) || r.action;
+      io.log(`${action.padEnd(10)} ${r.name}${r.version ? `  @${r.version}` : ""}${note ? `  (${note})` : ""}`);
+      if (r.nonPortable) io.log(`           not portable: ${r.nonPortable.join("  ")}`);
+    }
   }
+  if (unchanged) io.log(`${unchanged} unchanged`);
+  if (elsewhere) io.log(`${elsewhere} only ${otherSide}, left alone`);
+  if (!results.length) io.log("no prompts");
+  if (inv.flags.dryRun) io.log("Dry run: nothing was changed.");
   return results.some((r) => r.action === "refused") ? 1 : 0;
 }
 
-const only = (inv: Invocation) => (inv.args.length ? { only: inv.args } : {});
+/** What a command is limited to: the names given, or else the config's scope. Both use the same "folder/" notation. */
+function only(inv: Invocation, config: TasConfig = inv.config): { only?: string[] } {
+  if (inv.args.length) return { only: inv.args };
+  return config.scope !== undefined ? { only: [config.scope].flat() } : {};
+}
+
+/** Of `candidates`, the names a command applies to. Names given exactly are kept even if not among the candidates, so a typo is reported. */
+function chosen(candidates: string[], inv: Invocation): string[] {
+  if (!inv.args.length) return candidates.filter((name) => inScope(name, inv.config.scope));
+  return [...new Set(inv.args.flatMap((arg) => (arg.endsWith("/") ? candidates.filter((name) => name.startsWith(arg)) : [arg])))];
+}
 
 /** The two configs a migration runs between, from --from and --to. */
 async function migrationEnds(inv: Invocation): Promise<{ from: TasConfig; to: TasConfig }> {
@@ -183,7 +222,7 @@ async function migrationEnds(inv: Invocation): Promise<{ from: TasConfig; to: Ta
 
 const promptCommands: Record<string, Command> = {
   async status(inv) {
-    const entries = (await status(syncContext(inv))).filter((entry) => !inv.args.length || inv.args.includes(entry.name));
+    const entries = (await status(syncContext(inv))).filter((entry) => selected(entry.name, inv.args.length ? inv.args : undefined));
     for (const entry of entries) {
       inv.io.log(`${entry.state.padEnd(15)} ${entry.name}`);
       if (entry.nonPortable) inv.io.log(`                not portable: ${entry.nonPortable.join("  ")}`);
@@ -194,7 +233,7 @@ const promptCommands: Record<string, Command> = {
   },
 
   async check(inv) {
-    const definitions = (await loadPrompts(promptsDir(inv))).filter((def) => !inv.args.length || inv.args.includes(def.name));
+    const definitions = (await loadPrompts(promptsDir(inv))).filter((def) => selected(def.name, only(inv).only));
     let blocked = false;
     for (const def of definitions) {
       const notes = checkPortability(def);
@@ -210,12 +249,21 @@ const promptCommands: Record<string, Command> = {
   },
 
   async pull(inv) {
-    return reportSync(await pull(syncContext(inv), { force: inv.flags.force, ...only(inv) }), inv.io);
+    const options = { force: inv.flags.force, dryRun: inv.flags.dryRun, ...(inv.args.length ? { only: inv.args } : {}) };
+    return reportSync(await pull(syncContext(inv), options), inv, "in your files");
   },
 
   async push(inv) {
+    // A label moves what production serves. Applying one to every prompt has to be said, not implied by leaving names out.
+    if (inv.flags.label && !inv.args.length && !inv.flags.all) {
+      throw new UsageError(
+        `--label with no prompt names would point "${inv.flags.label.join('", "')}" at every prompt. ` +
+          `Name the prompts (a folder such as "support/" works), or pass --all if every prompt is what you mean.`,
+      );
+    }
     const labels = inv.flags.label ? { labels: inv.flags.label } : {};
-    return reportSync(await push(syncContext(inv), { force: inv.flags.force, ...labels, ...only(inv) }), inv.io);
+    const options = { force: inv.flags.force, dryRun: inv.flags.dryRun, ...labels, ...(inv.args.length ? { only: inv.args } : {}) };
+    return reportSync(await push(syncContext(inv), options), inv, "on the platform");
   },
 
   async delete(inv) {
@@ -225,13 +273,13 @@ const promptCommands: Record<string, Command> = {
       inv.io.log("Nothing deleted. This cannot be undone on the platform; re-run with --yes to confirm.");
       return 1;
     }
-    return reportSync(await remove(syncContext(inv), inv.args), inv.io);
+    return reportSync(await remove(syncContext(inv), inv.args), inv, "on the platform");
   },
 
   async migrate(inv) {
     const { from, to } = await migrationEnds(inv);
     if (!from.platform.prompts || !to.platform.prompts) throw new UsageError("both platforms must have a prompt registry");
-    const results = await migratePrompts(from.platform.prompts, to.platform.prompts, { history: inv.flags.history, ...only(inv) });
+    const results = await migratePrompts(from.platform.prompts, to.platform.prompts, { history: inv.flags.history, ...only(inv, from) });
     for (const r of results) {
       const detail =
         r.action === "failed"
@@ -285,14 +333,14 @@ const datasetCommands: Record<string, Command> = {
   async migrate(inv) {
     const { from, to } = await migrationEnds(inv);
     if (!from.platform.datasets || !to.platform.datasets) throw new UsageError("both platforms must store datasets");
-    const results = await migrateDatasets(from.platform.datasets, to.platform.datasets, only(inv));
+    const results = await migrateDatasets(from.platform.datasets, to.platform.datasets, only(inv, from));
     for (const r of results) inv.io.log(`${r.action.padEnd(10)} ${r.name}  ${r.action === "failed" ? `(${r.error})` : `${r.items} items`}`);
     if (!results.length) inv.io.log("no datasets on the source platform");
     return results.some((r) => r.action === "failed") ? 1 : 0;
   },
 
   async list(inv) {
-    const names = await datasetStore(inv).list();
+    const names = chosen(await datasetStore(inv).list(), inv);
     inv.io.log(names.length ? names.sort().join("\n") : "no datasets");
     return 0;
   },
@@ -300,7 +348,9 @@ const datasetCommands: Record<string, Command> = {
   async pull(inv) {
     const store = datasetStore(inv);
     let missing = false;
-    for (const name of inv.args.length ? inv.args : await store.list()) {
+    // Listing is only needed to expand a folder or apply the scope; exact names go straight through.
+    const needsList = !inv.args.length || inv.args.some((arg) => arg.endsWith("/"));
+    for (const name of chosen(needsList ? await store.list() : [], inv)) {
       const r = await pullDataset(datasetsDir(inv), store, name);
       missing ||= r.action === "missing";
       inv.io.log(
@@ -314,7 +364,7 @@ const datasetCommands: Record<string, Command> = {
 
   async push(inv) {
     const store = datasetStore(inv);
-    const names = inv.args.length ? inv.args : await datasetFiles(datasetsDir(inv));
+    const names = chosen(await datasetFiles(datasetsDir(inv)), inv);
     for (const name of names) {
       const r = await pushDataset(datasetsDir(inv), store, name);
       inv.io.log(`pushed     ${name}  ${r.items} items`);
@@ -409,6 +459,8 @@ export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<n
         config: { type: "string" },
         profile: { type: "string" },
         label: { type: "string", multiple: true },
+        all: { type: "boolean", default: false },
+        "dry-run": { type: "boolean", default: false },
         force: { type: "boolean", default: false },
         yes: { type: "boolean", default: false },
         port: { type: "string" },
@@ -432,6 +484,8 @@ export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<n
         config: values.config,
         profile: values.profile,
         label: values.label,
+        all: values.all,
+        dryRun: values["dry-run"],
         force: values.force,
         yes: values.yes,
         port: values.port,

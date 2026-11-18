@@ -41,6 +41,19 @@ export interface TasConfig {
   promptsDir?: string;
   /** Where the CLI reads and writes dataset files. Default "./datasets". */
   datasetsDir?: string;
+  /**
+   * Limit the CLI and the studio to prompts and datasets whose names start with one of these, for
+   * example "support/". Use it when several applications share one platform project: status, push,
+   * pull and migrate then neither show nor touch anything outside it. A scope ending in "/" covers
+   * everything under that folder; one without covers that exact name. Runtime calls are not affected.
+   */
+  scope?: string | string[];
+  /**
+   * Which platform version each bundled prompt was last synced as: `await loadPromptVersions("./prompts")`.
+   * With it, traces of repo-canonical prompts link to the platform's prompt version, as long as the
+   * bundled prompt is unchanged since that sync. Costs nothing at runtime: it is the lockfile, read once.
+   */
+  promptVersions?: PromptVersions;
   gateway?: GatewayConfig;
   masking?: MaskingConfig;
   /**
@@ -67,6 +80,13 @@ export interface TasConfig {
   cacheTtlMs?: number;
 }
 
+/** The platform versions of synced prompts, as `tas.lock.json` records them for one profile. */
+export interface PromptVersions {
+  /** The platform these versions belong to. Ignored by a client configured for another platform. */
+  platform: string;
+  prompts: Record<string, { hash: string; version: string }>;
+}
+
 /** Named configs for the CLI (`--profile acme`) and for apps with a fixed set of tenants. */
 export interface TasProfiles {
   profiles: Record<string, TasConfig>;
@@ -74,6 +94,27 @@ export interface TasProfiles {
 }
 
 /** Identity helper for `tas.config.ts`, so the file gets type-checking and completion. */
+/**
+ * Pick one config out of a profiles file: the named profile, or its default. A single config is
+ * returned as it is. This is how the CLI resolves `--profile`; `createClient(config, name)` uses it too.
+ */
+export function resolveProfile(config: TasConfig | TasProfiles, name?: string): { config: TasConfig; name: string } {
+  if (!("profiles" in config)) {
+    if (name !== undefined) throw new Error(`profile "${name}" was asked for, but the config is a single config without profiles`);
+    return { config, name: "default" };
+  }
+  const chosen = name ?? config.default;
+  const found = config.profiles[chosen];
+  if (!found) throw new Error(`no profile "${chosen}" (have: ${Object.keys(config.profiles).join(", ")})`);
+  return { config: found, name: chosen };
+}
+
+/** True when `name` is inside `scope`: under one of its folders ("support/") or equal to one of its names. No scope means everything. */
+export function inScope(name: string, scope: string | string[] | undefined): boolean {
+  if (scope === undefined) return true;
+  return [scope].flat().some((entry) => (entry.endsWith("/") ? name.startsWith(entry) : name === entry));
+}
+
 export function defineConfig(config: TasConfig): TasConfig;
 export function defineConfig(config: TasProfiles): TasProfiles;
 export function defineConfig(config: TasConfig | TasProfiles): TasConfig | TasProfiles {
