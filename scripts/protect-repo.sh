@@ -11,6 +11,9 @@
 #      and only accepts runs from main.
 #   3. main: changes arrive by pull request with CI green; no force pushes, no deletion.
 #   4. Version tags (v*) cannot be moved or deleted once created.
+#   5. Only GitHub's own actions and pnpm/action-setup may run, and only pinned to a commit.
+#   6. Secret scanning with push protection, Dependabot alerts and security updates, and private
+#      vulnerability reporting.
 set -euo pipefail
 
 repo="${1:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
@@ -72,5 +75,26 @@ ruleset "version tags" '{
   "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
   "rules": [{ "type": "deletion" }, { "type": "update" }]
 }'
+
+echo "5. Which actions may run"
+gh api -X PUT "repos/${repo}/actions/permissions" --input - >/dev/null <<JSON
+{ "enabled": true, "allowed_actions": "selected", "sha_pinning_required": true }
+JSON
+gh api -X PUT "repos/${repo}/actions/permissions/selected-actions" --input - >/dev/null <<JSON
+{ "github_owned_allowed": true, "verified_allowed": false, "patterns_allowed": ["pnpm/action-setup@*"] }
+JSON
+gh api -X PUT "repos/${repo}/actions/permissions/workflow" --input - >/dev/null <<JSON
+{ "default_workflow_permissions": "read", "can_approve_pull_request_reviews": false }
+JSON
+
+echo "6. Scanning and reporting"
+gh api -X PATCH "repos/${repo}" --input - >/dev/null <<JSON
+{ "security_and_analysis": {
+    "secret_scanning": { "status": "enabled" },
+    "secret_scanning_push_protection": { "status": "enabled" } } }
+JSON
+gh api -X PUT "repos/${repo}/vulnerability-alerts" >/dev/null
+gh api -X PUT "repos/${repo}/automated-security-fixes" >/dev/null
+gh api -X PUT "repos/${repo}/private-vulnerability-reporting" >/dev/null
 
 echo "Done."
