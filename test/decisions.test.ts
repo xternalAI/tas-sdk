@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   braintrust,
+  checkPortability,
   createClient,
   dataUrl,
   ENVELOPE_KEY,
@@ -318,9 +319,12 @@ describe("decisions: attachments", () => {
     expect(hasAttachments(fixtures[0]!)).toBe(false);
   });
 
-  it("only text, image and file parts exist; a part must be well-formed", () => {
+  it("the parts are text, image, file, audio and video; a part must be well-formed", () => {
     const withPart = (part: unknown) => ({ type: "chat", name: "x", messages: [{ role: "user", content: [part] }] });
-    expect(() => parsePrompt(withPart({ type: "audio", url: "x" }))).toThrow(PromptValidationError);
+    expect(() => parsePrompt(withPart({ type: "audio", url: "x" }))).toThrow(PromptValidationError); // audio needs its format
+    expect(() => parsePrompt(withPart({ type: "hologram", url: "x" }))).toThrow(PromptValidationError);
+    expect(parsePrompt(withPart({ type: "audio", url: "x", format: "wav" })).type).toBe("chat");
+    expect(parsePrompt(withPart({ type: "video", url: "x" })).type).toBe("chat");
     expect(() => parsePrompt(withPart({ type: "image" }))).toThrow(PromptValidationError);
     expect(() => parsePrompt(withPart({ type: "image", url: "x", detail: "huge" }))).toThrow(PromptValidationError);
     expect(() => parsePrompt({ type: "chat", name: "x", messages: [{ role: "user", content: [] }] })).toThrow(PromptValidationError);
@@ -351,6 +355,81 @@ describe("decisions: attachments", () => {
     ]);
     expect(() => fromOpenAIContent(42)).toThrow(/neither text nor a list of parts/);
     expect(() => fromOpenAIContent([{ type: "file", file: {} }])).toThrow(/"file" is not supported/);
+  });
+
+  it("audio and video on the wire: inline audio is OpenAI's input_audio; by URL they use the common extensions", () => {
+    const wav = `data:audio/wav;base64,${"B".repeat(40)}`;
+    const wire = toOpenAIContent([
+      { type: "audio", url: wav, format: "wav" },
+      { type: "audio", url: "https://example.com/call.mp3", format: "mp3" },
+      { type: "video", url: "https://example.com/clip.mp4" },
+    ]) as unknown[];
+    expect(wire).toEqual([
+      { type: "input_audio", input_audio: { data: "B".repeat(40), format: "wav" } },
+      { type: "audio_url", audio_url: { url: "https://example.com/call.mp3" } },
+      { type: "video_url", video_url: { url: "https://example.com/clip.mp4" } },
+    ]);
+    // Reading back: inline audio and video survive; `audio_url` has no format, so it cannot become an audio part.
+    expect(fromOpenAIContent([wire[0], wire[2]])).toEqual([
+      { type: "audio", url: wav, format: "wav" },
+      { type: "video", url: "https://example.com/clip.mp4" },
+    ]);
+    expect(() => fromOpenAIContent([wire[1]])).toThrow(/"audio_url" is not supported/);
+    expect(fromOpenAIContent([{ type: "input_audio", input_audio: { data: "{{recording}}", format: "mp3" } }])).toEqual([
+      { type: "audio", url: "{{recording}}", format: "mp3" },
+    ]);
+  });
+
+  it("each platform stores audio and video where it can, and all of them return the prompt intact", async () => {
+    const media = fixtures.find((f) => f.name === "media/transcribe")!;
+    const b = fakeBraintrust();
+    const l = fakeLangfuse();
+    const s = fakeLangSmith();
+    for (const reg of [bt(b), lf(l), ls(s)]) {
+      await reg.push(media);
+      expect((await reg.get({ name: media.name }))!.definition).toEqual(media);
+    }
+    // Braintrust: audio is native (with the variable kept), video only in metadata.
+    const row = b.versions.get("media/transcribe")![0] as any;
+    expect(row.prompt_data.prompt.messages[0].content).toEqual([
+      { type: "text", text: "Transcribe the recording and say what the clip shows." },
+      { type: "input_audio", input_audio: { data: "{{recording}}", format: "wav" } },
+    ]);
+    expect(row.metadata.__tas.fields.messages).toBeDefined();
+    // Langfuse: text with markers. LangSmith: only the text has a template.
+    expect((l.store.get("media/transcribe")![0] as any).prompt[0].content).toBe(
+      "Transcribe the recording and say what the clip shows.\n[audio: {{recording}}]\n[video: {{clip}}]",
+    );
+    const templates = s.repos.get("media--transcribe")!.commits[0]!.manifest.kwargs.messages[0].kwargs.prompt;
+    expect(templates.map((t: any) => t.id.at(-1))).toEqual(["PromptTemplate"]);
+    const warned = checkPortability(media)
+      .filter((n) => n.level === "warning")
+      .map((n) => n.platform);
+    expect(warned.sort()).toEqual(["braintrust", "langfuse", "langsmith"]);
+  });
+
+  it("traces summarise inline audio as well as data: URIs", async () => {
+    const spans: SpanRecord[] = [];
+    const tracing: PlatformAdapter = {
+      id: "t",
+      tracing: {
+        url: "https://t.test",
+        headers: {},
+        attributes: (sp) => (spans.push(sp), {}),
+        fetch: (async () => new Response("{}")) as typeof fetch,
+      },
+    };
+    const client = createClient({ platform: memory(), tracing: [tracing] });
+    const input = [
+      { type: "input_audio", input_audio: { data: "C".repeat(8000), format: "mp3" } },
+      { data: "short", format: "x" },
+    ];
+    await client.trace("call", { input }, () => undefined);
+    await client.flush();
+    expect(spans[0]!.input).toEqual([
+      { type: "input_audio", input_audio: { data: "[audio/mp3 attachment, 6 kB]", format: "mp3" } },
+      { data: "short", format: "x" },
+    ]);
   });
 
   it("run sends parts on the wire, and chat turns can carry attachments too", async () => {
@@ -525,9 +604,9 @@ describe("decisions: Braintrust", () => {
 
   it.each([
     [
-      "an audio part",
-      { role: "user", content: [{ type: "input_audio", input_audio: { data: "…", format: "wav" } }] },
-      /part of type "input_audio" is not supported/,
+      "a part of a kind we do not know",
+      { role: "user", content: [{ type: "refusal", refusal: "no" }] },
+      /part of type "refusal" is not supported/,
     ],
     ["a tool-role message", { role: "tool", content: "result" }, /role "tool"/],
   ])("rejects a prompt with %s as not portable", async (_what, message, error) => {
@@ -590,7 +669,12 @@ describe("decisions: Langfuse", () => {
 
   it("a create call that succeeds with an empty reply fails clearly, instead of with a type error later", async () => {
     const empty = (async () => new Response(null, { status: 200 })) as typeof fetch;
-    const reg = langfuse({ publicKey: "pk", secretKey: "sk", fetch: (async (url: URL | RequestInfo, init?: RequestInit) => ((init?.method ?? "GET") === "GET" ? new Response("{}", { status: 404 }) : empty(url, init))) as typeof fetch }).prompts!;
+    const reg = langfuse({
+      publicKey: "pk",
+      secretKey: "sk",
+      fetch: (async (url: URL | RequestInfo, init?: RequestInit) =>
+        (init?.method ?? "GET") === "GET" ? new Response("{}", { status: 404 }) : empty(url, init)) as typeof fetch,
+    }).prompts!;
     await expect(reg.push(fixtures[1]!)).rejects.toThrow("langfuse POST /v2/prompts succeeded but returned an empty reply");
     const store = langfuse({ publicKey: "pk", secretKey: "sk", fetch: empty }).datasets!;
     await expect(store.push({ name: "qa", items: [] })).rejects.toThrow(/POST \/v2\/datasets succeeded but returned an empty reply/);
@@ -598,7 +682,17 @@ describe("decisions: Langfuse", () => {
 
   it("something that is not a tool list under `tools` in a Langfuse config is kept as a setting, not dropped", async () => {
     const fake = fakeLangfuse();
-    fake.store.set("odd", [{ name: "odd", version: 1, type: "text", prompt: "hi", config: { model: "gpt-5", tools: "auto", temperature: 0 }, labels: ["latest"], tags: [] }]);
+    fake.store.set("odd", [
+      {
+        name: "odd",
+        version: 1,
+        type: "text",
+        prompt: "hi",
+        config: { model: "gpt-5", tools: "auto", temperature: 0 },
+        labels: ["latest"],
+        tags: [],
+      },
+    ]);
     const got = (await lf(fake).get({ name: "odd" }))!.definition;
     expect(got).toMatchObject({ model: { id: "gpt-5", params: { tools: "auto", temperature: 0 } } });
     expect(got.tools).toBeUndefined();

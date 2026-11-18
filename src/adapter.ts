@@ -88,8 +88,15 @@ export function tagsWithoutArchiveMarker(tags: string[] | null | undefined, arch
  * if it was, the emulated copy is stale and the vendor's edit wins.
  */
 export function fingerprint(native: unknown): string {
+  // Key order must not matter: platforms return objects with their keys rearranged (Braintrust does, seen live).
+  const ordered = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(ordered);
+    if (!value || typeof value !== "object") return value;
+    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return Object.fromEntries(entries.map(([k, v]) => [k, ordered(v)]));
+  };
   return createHash("sha256")
-    .update(JSON.stringify(native ?? null))
+    .update(JSON.stringify(ordered(native ?? null)))
     .digest("hex")
     .slice(0, 16);
 }

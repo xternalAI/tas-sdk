@@ -70,12 +70,12 @@ function imageTemplate(part: Extract<ContentPart, { type: "image" }>): Lc {
   });
 }
 
-/** One template for plain text; a list of text and image templates for a message with parts. Files are left out. */
+/** One template for plain text; a list of text and image templates for a message with parts. Anything else is left out. */
 function contentTemplate(content: MessageContent): Lc | Lc[] {
   if (typeof content === "string") return template(content);
   return content.flatMap((part): Lc[] => {
     if (part.type === "text") return [template(part.text)];
-    if (part.type === "file") return [];
+    if (part.type !== "image") return []; // files, audio and video: LangChain has no template for them
     return [imageTemplate(part)];
   });
 }
@@ -101,7 +101,9 @@ function messageTemplate(message: PromptMessage): Lc {
 
 const hasFileParts = (def: PromptDefinition) =>
   def.type === "chat" &&
-  def.messages.some((m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type === "file"));
+  def.messages.some(
+    (m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type !== "text" && part.type !== "image"),
+  );
 
 /** The prompt half of a manifest: the templates, with the envelope in `metadata`. */
 function encodePrompt(def: PromptDefinition): Lc {

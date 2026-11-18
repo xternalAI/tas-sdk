@@ -30,7 +30,7 @@ function variableOf(triple: string | undefined, double: string | undefined): str
 
 /** Every string of a part that may hold variables. */
 const partStrings = (part: ContentPart): string[] =>
-  part.type === "text" ? [part.text] : part.type === "image" ? [part.url] : [part.url, part.name ?? ""];
+  part.type === "text" ? [part.text] : part.type === "file" ? [part.url, part.name ?? ""] : [part.url];
 
 function templateStrings(def: PromptDefinition): string[] {
   if (def.type === "text") return [def.text];
@@ -124,8 +124,8 @@ export function renderPrompt(def: PromptDefinition, input: RenderInput = {}): Re
     if (typeof m.content === "string") return [{ role: m.role, content: fill(m.content) }];
     const content = m.content.map((part): ContentPart => {
       if (part.type === "text") return { ...part, text: fill(part.text) };
-      if (part.type === "image") return { ...part, url: fill(part.url) };
-      return { ...part, url: fill(part.url), ...(part.name === undefined ? {} : { name: fill(part.name) }) };
+      if (part.type === "file") return { ...part, url: fill(part.url), ...(part.name === undefined ? {} : { name: fill(part.name) }) };
+      return { ...part, url: fill(part.url) };
     });
     return [{ role: m.role, content }];
   });
