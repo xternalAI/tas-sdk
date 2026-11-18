@@ -114,7 +114,14 @@ Pinned by `test/run.test.ts`. Verified live on 2026-11-17 against a local Ollama
 
 Pinned by `test/trace.test.ts`. Verified live on 2026-11-17: one traced, masked, tool-using run was exported to all three platforms at once and read back from each through its API.
 
-- **We implement the OpenTelemetry wire format ourselves** (about 250 lines: spans encoded as OTLP JSON and posted with `fetch`) instead of depending on the official OpenTelemetry SDK. All three platforms accept OTLP JSON over HTTP (verified live), so no protobuf is needed. The official packages have a clean advisory record but bring roughly ten packages, and the exporter is still 0.x. *Caveat:* spans created by an application's own OpenTelemetry setup (HTTP, database) do not nest with ours, and ours do not appear in theirs. A separate optional bridge package is the planned answer for teams already on OpenTelemetry.
+- **We implement the OpenTelemetry wire format ourselves** (about 250 lines: spans encoded as OTLP JSON and posted with `fetch`) instead of depending on the official OpenTelemetry SDK. All three platforms accept OTLP JSON over HTTP (verified live), so no protobuf is needed. The official packages have a clean advisory record but bring roughly ten packages, and the exporter is still 0.x.
+- **`otlp({ url, headers })` is a tracing-only target for any OpenTelemetry backend** (a Collector, Jaeger, Tempo, Honeycomb, ...), with vendor-neutral attribute names: OpenTelemetry's `gen_ai.*`, `input.value` / `output.value`, and `tas.*` for the rest. An `attributes` hook renames them for a backend with its own conventions. *Caveat:* tested against a recorded request, not a running collector.
+- **`openTelemetry: api` joins an application's existing OpenTelemetry tracing** (pinned by `test/otel.test.ts`, which runs against the real OpenTelemetry API and SDK, installed for tests only). You pass the `@opentelemetry/api` module; the SDK describes the few calls it uses structurally and never imports it, so it is not a dependency. With it:
+  - every span here is also an OpenTelemetry span with the same trace and span ids;
+  - our spans nest under the application's active span, and spans the application starts inside `trace()`, a run or a tool nest under ours;
+  - the application's pipeline exports them, with the same masking applied;
+  - it is independent of `tracing`: with both on and a pipeline that already forwards to the platform, each span arrives there twice, so set `tracing: false` in that setup;
+  - with no OpenTelemetry SDK registered it falls back to its own ids and keeps working.
 - **One span shape for every platform**: `span`, `generation` (a model call) or `tool`, with input, output, metadata, model, settings, token usage and the prompt that produced it. Each adapter translates it into that platform's attribute names.
 - **`run` and `chat` are traced automatically**: one span per run named after the prompt, one per model call, one per tool execution. `client.trace()` groups them and adds your own spans.
 - **A block's return value is recorded as its output** unless the block sets one.

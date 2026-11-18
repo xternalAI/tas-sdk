@@ -9,6 +9,7 @@ export {
   langsmith,
 } from "./adapters/langsmith/index.ts";
 export { memory } from "./adapters/memory.ts";
+export { otlp, type OtlpOptions } from "./adapters/otlp.ts";
 export * from "./client.ts";
 export * from "./config.ts";
 export * from "./dataset.ts";
