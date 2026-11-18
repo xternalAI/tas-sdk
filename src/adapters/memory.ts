@@ -58,6 +58,9 @@ export function memory(): PlatformAdapter {
       for (const v of versions) v.labels = v.labels.filter((l) => !labels.includes(l));
       target.labels.push(...labels);
     },
+    async versions(name) {
+      return (store.get(name) ?? []).map((v) => v.version);
+    },
     async delete(name) {
       store.delete(name);
     },

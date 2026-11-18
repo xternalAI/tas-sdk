@@ -113,11 +113,15 @@ export function fakeLangfuse() {
     if (path === url.pathname) return json({ message: "no such route" }, 404);
 
     if (method === "GET" && path === "") {
-      const all = [...store.values()].map((v) => ({
-        name: v[0]!.name,
-        labels: [...new Set(v.flatMap((r) => r.labels))],
-        tags: v[0]!.tags,
-      }));
+      const wanted = url.searchParams.get("name");
+      const all = [...store.values()]
+        .map((v) => ({
+          name: v[0]!.name,
+          versions: v.map((r) => r.version).reverse(), // the real API does not promise an order
+          labels: [...new Set(v.flatMap((r) => r.labels))],
+          tags: v[0]!.tags,
+        }))
+        .filter((p) => !wanted || p.name === wanted);
       const limit = Number(url.searchParams.get("limit")),
         page = Number(url.searchParams.get("page"));
       return json({ data: all.slice((page - 1) * limit, page * limit), meta: { totalPages: Math.max(1, Math.ceil(all.length / limit)) } });
@@ -256,7 +260,9 @@ export function fakeLangSmith() {
       }
       if (!m[2]) {
         const offset = Number(url.searchParams.get("offset") ?? 0);
-        return json({ commits: (repo?.commits ?? []).slice(offset, offset + 100).map(({ id, commit_hash }) => ({ id, commit_hash })) });
+        // Newest first, as the real API lists them.
+        const newestFirst = [...(repo?.commits ?? [])].reverse();
+        return json({ commits: newestFirst.slice(offset, offset + 100).map(({ id, commit_hash }) => ({ id, commit_hash })) });
       }
       const ref = decodeURIComponent(m[2]);
       const commit =

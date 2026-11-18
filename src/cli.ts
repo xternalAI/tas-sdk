@@ -7,6 +7,7 @@ import { createClient } from "./client.ts";
 import type { TasConfig, TasProfiles } from "./config.ts";
 import { DATASET_EXTENSION, pullDataset, pushDataset } from "./dataset.ts";
 import type { EvalDefinition } from "./eval.ts";
+import { migrateDatasets, migratePrompts } from "./migrate.ts";
 import { checkPortability } from "./portability.ts";
 import { loadPrompts, writePromptSchema } from "./prompt/file.ts";
 import { generatePromptTypes } from "./prompt/types.ts";
@@ -21,7 +22,7 @@ import { pull, push, remove, type SyncContext, type SyncResult, status } from ".
  * Each command is one entry in `COMMANDS`. To add a command, add an entry and a line to `USAGE`.
  */
 
-export const USAGE = `tas prompts <status|check|pull|push|delete|schema|types> [names...]
+export const USAGE = `tas prompts <status|check|pull|push|delete|migrate|schema|types> [names...]
 
   status   compare prompt files with the platform
   check    say what each prompt would not store natively on Braintrust, Langfuse and
@@ -32,17 +33,23 @@ export const USAGE = `tas prompts <status|check|pull|push|delete|schema|types> [
   delete   permanently delete the named prompts: every version on the platform,
            plus the local file. To retire a prompt reversibly, set
            "archived: true" in its file and push instead.
+  migrate  copy prompts straight from one platform to another:
+             tas prompts migrate --from <profile> --to <profile> [--history] [names...]
+           Labels are kept. Without --history the newest version and every labelled
+           version are copied; with it, every version, oldest first.
   schema   write prompt.schema.json into the prompts directory, for editor
            validation and autocomplete of *.prompt.yaml files
   types    write prompts.ts into the prompts directory: a TypeScript interface of
            every prompt's variables, placeholders and output, for createClient<Prompts>()
 
-tas datasets <list|pull|push> [names...]
+tas datasets <list|pull|push|migrate> [names...]
 
   list     datasets on the platform
   pull     platform -> <name>.dataset.jsonl. The platform's version of an item wins;
            rows only your file has are kept. No names: every dataset on the platform.
   push     file -> platform, upserting items by id. No names: every dataset file.
+  migrate  copy datasets straight from one platform to another:
+             tas datasets migrate --from <profile> --to <profile> [names...]
 
 tas studio
 
@@ -62,6 +69,8 @@ Options
                      prompts that use non-portable template syntax
   --yes              delete: confirm. Without it, delete only lists what it would remove
   --port <number>    studio: port to serve on (default 4983)
+  --from, --to       migrate: the profiles to copy from and to
+  --history          migrate: copy every version of each prompt, not only the ones in use
 `;
 
 export interface CliIO {
@@ -82,6 +91,9 @@ interface Flags {
   force: boolean;
   yes: boolean;
   port: string | undefined;
+  from: string | undefined;
+  to: string | undefined;
+  history: boolean;
 }
 
 /** Everything a command needs. */
@@ -95,6 +107,8 @@ interface Invocation {
   target: string;
   /** Resolve a path against the working directory. */
   path: (...parts: string[]) => string;
+  /** Load another profile of the same config file, for commands that work across two platforms. */
+  profile: (name: string) => Promise<TasConfig>;
 }
 type Command = (inv: Invocation) => Promise<number>;
 
@@ -160,6 +174,13 @@ function reportSync(results: SyncResult[], io: CliIO): number {
 
 const only = (inv: Invocation) => (inv.args.length ? { only: inv.args } : {});
 
+/** The two configs a migration runs between, from --from and --to. */
+async function migrationEnds(inv: Invocation): Promise<{ from: TasConfig; to: TasConfig }> {
+  if (!inv.flags.from || !inv.flags.to) throw new UsageError("migrate needs --from <profile> and --to <profile>");
+  if (inv.flags.from === inv.flags.to) throw new UsageError("--from and --to are the same profile");
+  return { from: await inv.profile(inv.flags.from), to: await inv.profile(inv.flags.to) };
+}
+
 const promptCommands: Record<string, Command> = {
   async status(inv) {
     const entries = (await status(syncContext(inv))).filter((entry) => !inv.args.length || inv.args.includes(entry.name));
@@ -207,6 +228,21 @@ const promptCommands: Record<string, Command> = {
     return reportSync(await remove(syncContext(inv), inv.args), inv.io);
   },
 
+  async migrate(inv) {
+    const { from, to } = await migrationEnds(inv);
+    if (!from.platform.prompts || !to.platform.prompts) throw new UsageError("both platforms must have a prompt registry");
+    const results = await migratePrompts(from.platform.prompts, to.platform.prompts, { history: inv.flags.history, ...only(inv) });
+    for (const r of results) {
+      const detail =
+        r.action === "failed"
+          ? `(${r.error})`
+          : `${r.versions} version${r.versions === 1 ? "" : "s"}${r.labels.length ? `, labels: ${r.labels.join(", ")}` : ""}`;
+      inv.io.log(`${r.action.padEnd(10)} ${r.name}  ${detail}`);
+    }
+    if (!results.length) inv.io.log("no prompts on the source platform");
+    return results.some((r) => r.action === "failed") ? 1 : 0;
+  },
+
   async schema(inv) {
     const written = await writePromptSchema(promptsDir(inv));
     inv.io.log(`wrote ${written}`);
@@ -246,6 +282,15 @@ async function datasetFiles(dir: string): Promise<string[]> {
 }
 
 const datasetCommands: Record<string, Command> = {
+  async migrate(inv) {
+    const { from, to } = await migrationEnds(inv);
+    if (!from.platform.datasets || !to.platform.datasets) throw new UsageError("both platforms must store datasets");
+    const results = await migrateDatasets(from.platform.datasets, to.platform.datasets, only(inv));
+    for (const r of results) inv.io.log(`${r.action.padEnd(10)} ${r.name}  ${r.action === "failed" ? `(${r.error})` : `${r.items} items`}`);
+    if (!results.length) inv.io.log("no datasets on the source platform");
+    return results.some((r) => r.action === "failed") ? 1 : 0;
+  },
+
   async list(inv) {
     const names = await datasetStore(inv).list();
     inv.io.log(names.length ? names.sort().join("\n") : "no datasets");
@@ -367,6 +412,9 @@ export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<n
         force: { type: "boolean", default: false },
         yes: { type: "boolean", default: false },
         port: { type: "string" },
+        from: { type: "string" },
+        to: { type: "string" },
+        history: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
       },
     });
@@ -387,11 +435,15 @@ export async function runCli(argv: string[], io: Partial<CliIO> = {}): Promise<n
         force: values.force,
         yes: values.yes,
         port: values.port,
+        from: values.from,
+        to: values.to,
+        history: values.history,
       },
       io: out,
       config,
       target,
       path: (...parts) => resolve(out.cwd, ...parts),
+      profile: async (name) => (await loadConfig(out.cwd, values.config, name)).config,
     });
   } catch (error) {
     out.error(`tas: ${error instanceof Error ? error.message : String(error)}`);

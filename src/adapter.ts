@@ -56,6 +56,11 @@ export interface PromptRegistry {
   push(definition: PromptDefinition, options?: PushOptions): Promise<RemotePrompt>;
   /** Points each label at `version`, taking it from whichever version held it. Other labels are untouched. */
   setLabels(name: string, version: string, labels: string[]): Promise<void>;
+  /**
+   * Every version of a prompt, oldest first, for migrating history to another platform. Absent on
+   * a platform that has no way to list them.
+   */
+  versions?(name: string): Promise<string[]>;
   /** Permanently removes the prompt and every version of it. A no-op if it does not exist. Never called by sync. */
   delete(name: string): Promise<void>;
 }

@@ -74,6 +74,19 @@ Pinned by the "decisions: attachments" tests. Verified live on 2026-11-17: a pro
 - **Lockfile (`tas.lock.json`)** records the last synced hash per prompt and per profile, so one repo can mirror to several platforms. Repointing a profile at a different platform resets its section.
 - **Fetched prompts are cached for 60 seconds** by default; a stale copy is served if a refresh fails.
 
+## Migration between platforms
+
+Pinned by `test/migrate.test.ts`. Verified live on 2026-11-18: every fixture prompt, with two versions and a label, moved Langfuse -> LangSmith -> Braintrust intact, and a second run created nothing.
+
+- **`tas prompts migrate --from <profile> --to <profile>` copies platform to platform**, without going through files. Both platforms are profiles of one config file.
+- **Labels always survive.** By default the versions in use are copied: each one a label points at, then the newest, so every label and "latest" mean on the target what they meant on the source.
+- **`--history` copies every version, oldest first**, where the source can list them: Langfuse and LangSmith can. *Caveat:* Braintrust has no API we could find for listing a prompt's versions, so history cannot be migrated *out of* Braintrust; the command says so instead of copying less than asked. Migrating history *into* Braintrust works.
+- **It is safe to run again.** A version the target already holds (same content) is reused, so a second run creates nothing. *Caveats:* versions get new ids, dates and authors on the target; two consecutive identical versions collapse into one.
+- **Nothing is migrated half-right.** Each version is read back from the target's reply and compared; a mismatch fails that prompt. One prompt failing does not stop the others, and the command exits 1.
+- **`tas datasets migrate`** copies datasets the same way, upserting items by id.
+- **Not migrated:** traces, past experiments and scores (records of what happened on the old platform), and anything configured only in a vendor's UI.
+- **Sync and migrate differ in purpose.** With repo-canonical prompts, changing vendor is still just a config change and `tas prompts push`; `migrate` is for carrying labels and history, or for teams whose prompts live on the platform.
+
 ## Archiving and deletion
 
 - **Retiring a prompt is done with `archived: true` in its file**, not by deleting it. Archiving is an ordinary new version; removing the flag restores the prompt. Nothing is deleted on any platform.
