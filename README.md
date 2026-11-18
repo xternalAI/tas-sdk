@@ -1,6 +1,7 @@
 # Trace and Scale
 
 [![CI](https://github.com/xternalAI/tas-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/xternalAI/tas-sdk/actions/workflows/ci.yml)
+[![Coverage](https://github.com/xternalAI/tas-sdk/raw/badges/coverage.svg)](https://github.com/xternalAI/tas-sdk/actions/workflows/ci.yml)
 
 One TypeScript SDK for prompts, model calls, tracing and evals, with **Braintrust**, **Langfuse** and
 **LangSmith** as interchangeable backends. Your application talks to one API; which vendor stores the

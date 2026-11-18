@@ -9,7 +9,7 @@ For people and for coding agents; the rules are the same. Start with
 pnpm install
 pnpm typecheck        # tsc, no output means clean
 pnpm test             # offline tests, about a second
-pnpm coverage         # the same, with thresholds that fail the run
+pnpm coverage         # the same, with thresholds that fail the run; open coverage/index.html for the report
 pnpm lint             # biome: formatting and lint
 pnpm format           # apply formatting
 pnpm build            # emit dist/ for publishing

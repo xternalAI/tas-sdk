@@ -17,15 +17,15 @@ concurrency:
 jobs:
   test:
     name: Test (Node ${{ matrix.node }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         node: ["22", "24", "26"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
@@ -33,6 +33,43 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm coverage
+      # Coverage is the same on every Node version; report it once.
+      - name: Coverage summary
+        if: ${{ !cancelled() && matrix.node == '26' }}
+        run: node scripts/coverage-report.ts >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage report
+        if: ${{ !cancelled() && matrix.node == '26' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: coverage
+          retention-days: 30
       - run: pnpm build
       # The package as npm would ship it: packed, installed into an empty project, imported and run.
       - run: node scripts/smoke-package.ts
+
+  # Keeps the README's coverage badge current: the badge is one SVG file on a branch of its own,
+  # so no coverage service, account or token is involved.
+  badge:
+    name: Coverage badge
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: coverage-report
+          path: coverage
+      - name: Publish to the badges branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir out && cp coverage/badge.svg out/coverage.svg && cd out
+          git init -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add coverage.svg
+          git commit -q -m "Coverage badge for ${GITHUB_SHA}"
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
