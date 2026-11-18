@@ -168,6 +168,122 @@ describe("client", () => {
   });
 });
 
+describe("decisions: choosing a prompt version at runtime", () => {
+  const edited = (description: string): PromptDefinition => ({ ...triage, description });
+
+  /** A platform holding three versions of the prompt: v1 (no label), v2 at "staging", v3 at "production". */
+  async function setup(canonical: "repo" | "platform" = "repo") {
+    const platform = memory();
+    const v1 = await platform.prompts!.push(edited("v1"));
+    const v2 = await platform.prompts!.push(edited("v2"), { labels: ["staging"] });
+    const v3 = await platform.prompts!.push(edited("v3"), { labels: ["production"] });
+    await platform.prompts!.push({ type: "text", name: "other", text: "one" }, { labels: ["production"] });
+    await platform.prompts!.push({ type: "text", name: "other", text: "two" }, { labels: ["staging"] });
+    const client = createClient({ platform, canonical, prompts: [edited("bundled")], tracing: false });
+    const describe = async (options?: Parameters<typeof client.prompts.get>[1]) =>
+      (await client.prompts.get("support/triage", options)).definition.description;
+    return { client, describe, versions: { v1: v1.version, v2: v2.version, v3: v3.version } };
+  }
+
+  it("a call can ask for a past version, a label, or an environment (another word for label)", async () => {
+    const { describe, versions } = await setup();
+    expect(await describe({ version: versions.v1 })).toBe("v1");
+    expect(await describe({ label: "staging" })).toBe("v2");
+    expect(await describe({ environment: "staging" })).toBe("v2");
+    expect(await describe({ label: "staging", environment: "staging" })).toBe("v2");
+  });
+
+  it("asking for a version and a label at once, or two different labels, is refused", async () => {
+    const { describe, versions } = await setup();
+    await expect(describe({ version: versions.v1, label: "staging" })).rejects.toThrow("give a version or a label, not both");
+    await expect(describe({ version: versions.v1, environment: "staging" })).rejects.toThrow("not both");
+    await expect(describe({ label: "staging", environment: "production" })).rejects.toThrow("are the same thing");
+  });
+
+  it("withPromptOverrides sets the environment for every call in the block, without touching the calls", async () => {
+    const { client, describe } = await setup();
+    expect(await describe()).toBe("bundled"); // repo-canonical: the bundled file
+    await client.withPromptOverrides({ environment: "staging" }, async () => {
+      expect(await describe()).toBe("v2");
+      expect((await client.prompts.render("other")).messages[0]!.content).toBe("two");
+      // It follows async work started inside the block.
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      expect(await describe()).toBe("v2");
+    });
+    expect(await describe()).toBe("bundled"); // and ends with the block
+  });
+
+  it("pins one prompt to a version while the rest follow the block's label", async () => {
+    const { client, describe, versions } = await setup("platform");
+    await client.withPromptOverrides({ label: "staging", prompts: { "support/triage": { version: versions.v1 } } }, async () => {
+      expect(await describe()).toBe("v1");
+      expect((await client.prompts.render("other")).messages[0]!.content).toBe("two");
+    });
+    await client.withPromptOverrides({ prompts: { "support/triage": { environment: "staging" } } }, async () => {
+      expect(await describe()).toBe("v2");
+      expect((await client.prompts.render("other")).messages[0]!.content).toBe("one"); // untouched: the default label
+    });
+  });
+
+  it("the call wins over the block, and an inner block adds to an outer one", async () => {
+    const { client, describe, versions } = await setup();
+    await client.withPromptOverrides({ environment: "staging" }, async () => {
+      expect(await describe({ version: versions.v3 })).toBe("v3");
+      expect(await describe({ label: "production" })).toBe("v3");
+      await client.withPromptOverrides({ prompts: { "support/triage": { version: versions.v1 } } }, async () => {
+        expect(await describe()).toBe("v1");
+        expect((await client.prompts.render("other")).messages[0]!.content).toBe("two"); // outer label still applies
+      });
+      await client.withPromptOverrides({ label: "production" }, async () => expect(await describe()).toBe("v3"));
+      expect(await describe()).toBe("v2");
+    });
+  });
+
+  it("an overridden prompt that the platform does not have throws: nothing falls back silently", async () => {
+    const { client, describe } = await setup();
+    await client.withPromptOverrides({ environment: "qa" }, async () => {
+      await expect(describe()).rejects.toThrow('prompt "support/triage" not found at label "qa"');
+    });
+    await expect(describe({ version: "nope" })).rejects.toThrow('not found at version "nope"');
+    expect(() => client.withPromptOverrides({ label: "a", environment: "b" }, () => 1)).toThrow("are the same thing");
+    expect(() => client.withPromptOverrides({ prompts: { x: { version: "1", label: "a" } } }, () => 1)).toThrow(
+      'withPromptOverrides: prompt "x": give a version or a label, not both',
+    );
+  });
+
+  it("overrides belong to one client and never reach another", async () => {
+    const a = await setup();
+    const b = await setup();
+    await a.client.withPromptOverrides({ environment: "staging" }, async () => {
+      expect(await a.describe()).toBe("v2");
+      expect(await b.describe()).toBe("bundled");
+    });
+  });
+
+  it("run uses the overridden version too", async () => {
+    const platform = memory();
+    await platform.prompts!.push({ ...triage, messages: [{ role: "user", content: "staging says {{company}}" }] }, { labels: ["staging"] });
+    const sent: unknown[] = [];
+    const client = createClient({
+      platform,
+      prompts: [triage],
+      tracing: false,
+      gateway: {
+        baseURL: "http://gateway.test",
+        fetch: async (_url, init) => {
+          sent.push(JSON.parse(String(init?.body)).messages);
+          return Response.json({ choices: [{ message: { role: "assistant", content: "{}" }, finish_reason: "stop" }] });
+        },
+      },
+    });
+    const result = await client.withPromptOverrides({ environment: "staging" }, () =>
+      client.run("support/triage", { variables: { company: "Acme" }, output: undefined }),
+    );
+    expect(sent).toEqual([[{ role: "user", content: "staging says Acme" }]]);
+    expect(result.prompt.remote?.labels).toEqual(["staging"]);
+  });
+});
+
 describe("multi-tenancy", () => {
   it("pool isolates tenants, shares concurrent resolves, evicts LRU and does not cache failures", async () => {
     let resolves = 0;

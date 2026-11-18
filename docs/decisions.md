@@ -71,6 +71,14 @@ Pinned by the "decisions: attachments" tests. Verified live on 2026-11-17: a pro
 - **The user picks which side is the truth, per config:** `canonical: "repo"` (default) or `"platform"`.
 - **One rule for conflicts:** the canonical side always wins; the other side never overwrites it without `--force`.
 - **Runtime resolution:** repo-canonical serves bundled files; platform-canonical fetches from the platform and falls back to bundled files if it is unreachable. An explicit label or version always asks the platform.
+- **Choosing a version at runtime** (pinned by "decisions: choosing a prompt version at runtime" in `test/core.test.ts`):
+  - A call can name a `version` (any past version, by the platform's id), a `label`, or an `environment`, which is another word for label for people coming from platforms that say environments.
+  - `client.withPromptOverrides({ environment, prompts: { name: { version | label } } }, fn)` does the same for every call inside `fn` without changing those calls: a whole request served from "staging", or one prompt replayed at an old version.
+  - Precedence: the call itself, then that prompt's entry, then the block's label, then the configured default. An inner block adds to an outer one.
+  - **Asking for a version and a label together, or for two different labels, is refused** instead of one silently winning. *Changed:* before, a version given with a label silently won.
+  - **An overridden prompt is always read from the platform, and one that is not there throws.** Nothing falls back to the bundled file or another version, because a preview that quietly serves production prompts is worse than an error.
+  - Overrides belong to one client and follow async work started inside the block; another tenant's client never sees them.
+  - *Caveat:* a version id means something on one platform only, so code that pins a version id has to be updated after `migrate`. Labels survive migration.
 - **Lockfile (`tas.lock.json`)** records the last synced hash per prompt and per profile, so one repo can mirror to several platforms. Repointing a profile at a different platform resets its section.
 - **Fetched prompts are cached for 60 seconds** by default; a stale copy is served if a refresh fails.
 
