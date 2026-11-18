@@ -220,7 +220,7 @@ Pinned by `test/studio.test.ts`.
 - **Braintrust drops parameters the model does not support** (verified live: `temperature` on `gpt-5`). The intended set is kept in the envelope and restored on read.
 - **Labels are Braintrust environments**, which are org-wide and must already exist. Pushing to an unknown label fails.
 - **A prompt in template format `none` containing `{{` is rejected** as not portable.
-- **Roles other than system/user/assistant, and message parts other than text, image and file (audio, for example), are rejected** as not portable. The same holds on Langfuse and LangSmith.
+- **Roles other than system/user/assistant, and message parts of a kind the canonical model does not have, are rejected** as not portable. The same holds on Langfuse and LangSmith.
 - **Environment assignment uses endpoints outside Braintrust's published API spec** (verified live, but more likely to change).
 
 ## Langfuse
@@ -256,6 +256,15 @@ Pinned by `test/studio.test.ts`.
 - **Live tests are opt-in:** `pnpm test:live`, with credentials in `.env`. Plain `pnpm test` never touches a vendor.
 - **The live invocation test needs any OpenAI-compatible endpoint** (`TAS_LIVE_GATEWAY_URL`, `TAS_LIVE_GATEWAY_MODEL`); a local Ollama is enough and costs nothing. It asserts on what the SDK did, not on the model's wording.
 - **Live tests leave prompts behind** under a `tas-live-<timestamp>/` prefix. `pnpm cleanup:live` removes them and is run on request, not automatically.
+
+## Packaging and release
+
+- **MIT licence.**
+- **The published package is compiled JavaScript with type declarations** (`dist/`), ESM only, Node 22.18 or newer. `package.json` points at `dist` directly, so `npm publish` and `pnpm publish` ship the same thing. In development everything runs from TypeScript source; `pnpm tas` runs the CLI from source.
+- **`scripts/smoke-package.ts` tests the package as shipped**: it packs it, installs the tarball into an empty project with npm, imports it, type-checks against its declarations and runs `tas`. CI runs it after the build, on Node 22, 24 and 26.
+- **CI runs everything that works offline** (lint, typecheck, tests with coverage thresholds, build, package smoke test) and needs no secrets. Live tests stay manual: they create real things on real accounts.
+- **Publishing runs the checks first** (`prepublishOnly`: lint, typecheck, coverage; `prepack`: build), so a broken tree cannot be published by accident.
+- **`defineConfig` returns `TasConfig` or `TasProfiles`, not the literal type it was given**, so its result can always be passed to `createClient` (pinned in `test/core.test.ts`).
 
 ## Open questions
 

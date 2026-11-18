@@ -4,6 +4,7 @@ import {
   createClientPool,
   createMasker,
   currentClient,
+  defineConfig,
   ENVELOPE_KEY,
   extractVariables,
   findNonPortable,
@@ -244,5 +245,15 @@ describe("masking", () => {
     });
     expect(input.authorization).toBe("Bearer abc");
     expect(createMasker(undefined)(input)).toBe(input);
+  });
+});
+
+describe("defineConfig", () => {
+  it("hands back what it was given, typed so createClient accepts it even with callbacks inside", () => {
+    // A callback in the config once made the type widen to "config or profiles", which createClient rejects.
+    const config = defineConfig({ platform: memory(), tracing: false, masking: { custom: (value, _path) => value } });
+    expect(createClient(config).config).toBe(config);
+    const profiles = defineConfig({ default: "a", profiles: { a: { platform: memory() } } });
+    expect(profiles.profiles.a?.platform.id).toBe("memory");
   });
 });

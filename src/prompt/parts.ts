@@ -39,15 +39,13 @@ export function toOpenAIContent(content: MessageContent): string | OpenAIPart[] 
           : { type: "audio_url", audio_url: { url: part.url } };
       case "video":
         return { type: "video_url", video_url: { url: part.url } };
-      case "file": {
-        // Inline data goes as `file_data`. Anything else (a URL, or a {{variable}} not yet filled) is a reference.
-        const where = isDataUri(part.url) ? { file_data: part.url } : { file_id: part.url };
-        return {
-          type: "file",
-          file: { ...where, ...(part.name ? { filename: part.name } : {}), ...(part.mediaType ? { format: part.mediaType } : {}) },
-        };
-      }
     }
+    // What is left is a file. Inline data goes as `file_data`; anything else (a URL, or a {{variable}} not yet filled) is a reference.
+    const where = isDataUri(part.url) ? { file_data: part.url } : { file_id: part.url };
+    return {
+      type: "file",
+      file: { ...where, ...(part.name ? { filename: part.name } : {}), ...(part.mediaType ? { format: part.mediaType } : {}) },
+    };
   });
 }
 

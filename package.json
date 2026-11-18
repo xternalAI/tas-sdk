@@ -1,22 +1,52 @@
 {
   "name": "@traceandscale/sdk",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Vendor-neutral prompts, tracing and evals over Langfuse, LangSmith, Braintrust and friends.",
-  "license": "UNLICENSED",
+  "version": "0.1.0",
+  "description": "One TypeScript SDK for prompts, model calls, tracing and evals, with Braintrust, Langfuse and LangSmith as interchangeable backends.",
+  "keywords": [
+    "llm",
+    "prompts",
+    "prompt-management",
+    "tracing",
+    "observability",
+    "evals",
+    "opentelemetry",
+    "braintrust",
+    "langfuse",
+    "langsmith",
+    "litellm",
+    "vendor-neutral"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/xternalAI/tas-sdk#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xternalAI/tas-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xternalAI/tas-sdk/issues"
+  },
   "type": "module",
+  "sideEffects": false,
   "engines": {
     "node": ">=22.18"
   },
+  "packageManager": "pnpm@11.13.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
-    "tas": "./src/bin.ts"
+    "tas": "./dist/bin.js"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -26,19 +56,13 @@
     "coverage": "vitest run --coverage",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "lint": "biome check",
-    "format": "biome check --write"
+    "format": "biome check --write",
+    "tas": "node src/bin.ts",
+    "prepack": "pnpm build",
+    "prepublishOnly": "pnpm lint && pnpm typecheck && pnpm coverage"
   },
   "publishConfig": {
-    "access": "public",
-    "exports": {
-      ".": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      }
-    },
-    "bin": {
-      "tas": "./dist/bin.js"
-    }
+    "access": "public"
   },
   "dependencies": {
     "typebox": "^1.4.7",

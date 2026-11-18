@@ -13,6 +13,8 @@ pnpm coverage         # the same, with thresholds that fail the run
 pnpm lint             # biome: formatting and lint
 pnpm format           # apply formatting
 pnpm build            # emit dist/ for publishing
+pnpm tas <command>    # run the CLI from source
+node scripts/smoke-package.ts   # after a build: pack, install into an empty project, import and run it
 pnpm test:live        # against the real services; needs credentials in .env, see the *.live.test.ts files
 pnpm cleanup:live     # delete what live tests left behind (add --dry-run to look first)
 ```
@@ -54,3 +56,9 @@ Node 22.18 or newer. The code runs from TypeScript source directly; there is no 
    real service to disagree with its docs; record what you find.
 4. Add tracing, datasets and experiments the same way (`datasetConformance` exists for stores).
 5. Add the platform to `src/portability.ts`, to `scripts/cleanup-live.ts`, and to `docs/decisions.md`.
+
+## Releasing
+
+1. Set `version` in `package.json` and commit.
+2. `npm publish` (or `pnpm publish`). It lints, type-checks, runs the tests with coverage and builds first; `publishConfig` makes the scoped package public.
+3. Tag the commit: `git tag v<version> && git push --tags`.

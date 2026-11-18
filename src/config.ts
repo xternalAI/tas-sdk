@@ -74,6 +74,8 @@ export interface TasProfiles {
 }
 
 /** Identity helper for `tas.config.ts`, so the file gets type-checking and completion. */
-export function defineConfig<T extends TasConfig | TasProfiles>(config: T): T {
+export function defineConfig(config: TasConfig): TasConfig;
+export function defineConfig(config: TasProfiles): TasProfiles;
+export function defineConfig(config: TasConfig | TasProfiles): TasConfig | TasProfiles {
   return config;
 }
