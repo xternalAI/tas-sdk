@@ -34,7 +34,8 @@ export function checkPortability(def: PromptDefinition): PortabilityNote[] {
     notes.push({ platform, level, message });
 
   const parts = def.type === "chat" ? def.messages.flatMap((m) => ("content" in m && Array.isArray(m.content) ? m.content : [])) : [];
-  const hasFiles = parts.some((part) => part.type === "file");
+  const kinds = new Set(parts.map((part) => part.type));
+  const untemplated = (["file", "audio", "video"] as const).filter((kind) => kinds.has(kind));
   const hasPlaceholders = extractPlaceholders(def).length > 0;
 
   // The prompt itself.
@@ -48,6 +49,12 @@ export function checkPortability(def: PromptDefinition): PortabilityNote[] {
   }
 
   // Braintrust.
+  if (kinds.has("video"))
+    note(
+      "braintrust",
+      "warning",
+      "Video parts are kept in metadata only: Braintrust has no video message part. Its playground shows the prompt without them.",
+    );
   if (hasPlaceholders) note("braintrust", "info", "Placeholders are kept in metadata; Braintrust shows the prompt without them.");
   if (def.type === "text" && def.tools)
     note("braintrust", "info", "Tools on a text prompt are kept in metadata; Braintrust completion prompts have no tools.");
@@ -90,11 +97,11 @@ export function checkPortability(def: PromptDefinition): PortabilityNote[] {
       "warning",
       "The output schema is kept in metadata only: LangSmith has structured output for chat prompts, not text prompts.",
     );
-  if (hasFiles)
+  if (untemplated.length)
     note(
       "langsmith",
       "warning",
-      "File attachments are kept in metadata only: LangSmith has templates for text and images, not files. Its playground shows the prompt without them.",
+      `Attached ${untemplated.join(", ")} parts are kept in metadata only: LangSmith has templates for text and images, nothing else. Its playground shows the prompt without them.`,
     );
   if (def.model?.params)
     note(

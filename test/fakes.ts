@@ -52,6 +52,11 @@ export function fakeBraintrust(options: { environments?: string[]; keepMetadata?
       const pd = structuredClone(rest.prompt_data) as { options?: { model?: string; params?: Record<string, unknown> } };
       if (pd.options?.model === "gpt-5") delete pd.options.params?.temperature;
       const stored = { ...rest, prompt_data: pd };
+      // The real API hands message parts back with their keys in a different order.
+      for (const message of (pd as any).prompt?.messages ?? []) {
+        if (Array.isArray(message.content))
+          message.content = message.content.map((part: object) => Object.fromEntries(Object.entries(part).reverse()));
+      }
       const row: Row = {
         ...stored,
         metadata: options.keepMetadata === false ? null : rest.metadata,

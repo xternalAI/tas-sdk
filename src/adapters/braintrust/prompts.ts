@@ -17,7 +17,7 @@ import {
   tagsWithoutArchiveMarker,
   unpackEnvelope,
 } from "../../adapter.ts";
-import { hashPrompt, type PromptDefinition, type PromptMessage, parsePrompt } from "../../prompt/model.ts";
+import { hashPrompt, type MessageContent, type PromptDefinition, type PromptMessage, parsePrompt } from "../../prompt/model.ts";
 import { fromOpenAIContent, toOpenAIContent } from "../../prompt/parts.ts";
 import { fromOpenAITools, fromResponseFormat, type OpenAITool, PlatformError, toOpenAITools, toResponseFormat } from "../shared.ts";
 import type { BraintrustContext, ErrorFactory } from "./context.ts";
@@ -79,7 +79,22 @@ export function nativeFingerprint(prompt: unknown): string {
  * A definition as the body Braintrust stores. Whatever Braintrust cannot hold natively travels in
  * the envelope inside `metadata`; `needsEnvelope` says whether the prompt cannot round-trip without it.
  */
-export function encode(def: PromptDefinition): { body: Body; needsEnvelope: boolean } {
+export /**
+ * A message's content as Braintrust stores it. Text, images and files use the OpenAI wire format.
+ * Audio is always `input_audio` with the part's url kept as it is in `data` (Braintrust accepts no
+ * other audio form, verified live), so a `{{variable}}` survives. Video is left out: it has no
+ * native form there.
+ */
+function toStoredContent(content: MessageContent) {
+  if (typeof content === "string") return content;
+  return content.flatMap((part) => {
+    if (part.type === "video") return [];
+    if (part.type === "audio") return [{ type: "input_audio" as const, input_audio: { data: part.url, format: part.format } }];
+    return toOpenAIContent([part]) as object[];
+  });
+}
+
+function encode(def: PromptDefinition): { body: Body; needsEnvelope: boolean } {
   const emulated: (keyof PromptDefinition)[] = [];
   const openaiTools = def.tools ? toOpenAITools(def.tools) : undefined;
 
@@ -89,9 +104,13 @@ export function encode(def: PromptDefinition): { body: Body; needsEnvelope: bool
     if (def.tools) emulated.push("tools"); // completion prompts have nowhere to put tools
   } else {
     // Braintrust stores messages in the OpenAI format, attachments included.
-    const native = def.messages.flatMap((m) => ("content" in m ? [{ role: m.role, content: toOpenAIContent(m.content) }] : []));
-    // No placeholder message type exists; the full list travels in the envelope.
-    if (native.length !== def.messages.length) emulated.push("messages" as keyof PromptDefinition);
+    const native = def.messages.flatMap((m) => ("content" in m ? [{ role: m.role, content: toStoredContent(m.content) }] : []));
+    // No placeholder message type exists, and Braintrust rejects video parts (verified live); when a
+    // prompt has either, the full list travels in the envelope.
+    const hasVideo = def.messages.some(
+      (m) => "content" in m && Array.isArray(m.content) && m.content.some((part) => part.type === "video"),
+    );
+    if (native.length !== def.messages.length || hasVideo) emulated.push("messages" as keyof PromptDefinition);
     prompt = { type: "chat", messages: native, ...(openaiTools ? { tools: JSON.stringify(openaiTools) } : {}) };
   }
 

@@ -76,7 +76,7 @@ describe("portability", () => {
     const vision = fixtures.find((f) => f.name === "vision/describe")!;
     expect(by(vision, "braintrust")).toEqual([]);
     expect(by(vision, "langfuse")[0]).toMatch(/^warning: Langfuse messages are text only/);
-    expect(by(vision, "langsmith").some((n) => /^warning: File attachments are kept in metadata only/.test(n))).toBe(true);
+    expect(by(vision, "langsmith").some((n) => /^warning: Attached file parts are kept in metadata only/.test(n))).toBe(true);
     const imagesOnly: PromptDefinition = {
       type: "chat",
       name: "x",

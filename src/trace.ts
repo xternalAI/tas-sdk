@@ -229,6 +229,11 @@ function withoutAttachmentBytes<T>(value: T, seen = new WeakSet<object>()): T {
     changed ||= next !== child;
     return next;
   };
+  // Inline audio travels as bare base64 with its format beside it, not as a data: URI.
+  const audio = value as { data?: unknown; format?: unknown };
+  if (typeof audio.data === "string" && typeof audio.format === "string" && audio.data.length > 256 && !audio.data.startsWith("data:")) {
+    return { ...value, data: summariseDataUrl(`data:audio/${audio.format};base64,${audio.data}`) } as T;
+  }
   const copy = Array.isArray(value) ? value.map(visit) : Object.fromEntries(Object.entries(value).map(([k, v]) => [k, visit(v)]));
   return (changed ? copy : value) as T;
 }

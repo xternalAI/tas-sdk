@@ -38,6 +38,20 @@ export const fixtures: PromptDefinition[] = [
       },
     ],
   },
+  {
+    type: "chat",
+    name: "media/transcribe",
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Transcribe the recording and say what the clip shows." },
+          { type: "audio", url: "{{recording}}", format: "wav" },
+          { type: "video", url: "{{clip}}" },
+        ],
+      },
+    ],
+  },
 ];
 
 export interface ConformanceOptions {

@@ -7,6 +7,7 @@ import {
   ENVELOPE_KEY,
   extractVariables,
   findNonPortable,
+  fingerprint,
   hashPrompt,
   memory,
   type PromptDefinition,
@@ -103,6 +104,15 @@ describe("adapter contract", () => {
     await reg.setLabels(triage.name, v2.version, ["production"]);
     expect((await reg.get({ name: triage.name, label: "production" }))!.version).toBe(v2.version);
     expect(await reg.get({ name: "nope", label: "production" })).toBeNull();
+  });
+
+  it("a fingerprint ignores key order, which platforms do not preserve, but not values or list order", () => {
+    expect(fingerprint([{ type: "text", text: "a" }, { b: { y: 1, x: 2 } }])).toBe(
+      fingerprint([{ text: "a", type: "text" }, { b: { x: 2, y: 1 } }]),
+    );
+    expect(fingerprint([{ type: "text", text: "a" }])).not.toBe(fingerprint([{ type: "text", text: "b" }]));
+    expect(fingerprint([1, 2])).not.toBe(fingerprint([2, 1]));
+    expect(fingerprint(undefined)).toBe(fingerprint(null));
   });
 
   it("envelope carries emulated fields through free-form metadata", () => {

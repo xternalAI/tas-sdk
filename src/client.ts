@@ -125,7 +125,13 @@ function createUntypedClient(config: TasConfig): TasClient {
     .map((adapter) => adapter.tracing)
     .filter((exporter): exporter is TraceExporter => exporter !== undefined);
   const mask = createMasker(config.masking);
-  const tracer = new Tracer({ exporters, mask, openTelemetry: config.openTelemetry, ...config.traceExport, ...(config.onTraceError ? { onError: config.onTraceError } : {}) });
+  const tracer = new Tracer({
+    exporters,
+    mask,
+    openTelemetry: config.openTelemetry,
+    ...config.traceExport,
+    ...(config.onTraceError ? { onError: config.onTraceError } : {}),
+  });
 
   const fromLocal = (name: string): ResolvedPrompt | undefined => {
     const definition = local.get(name);

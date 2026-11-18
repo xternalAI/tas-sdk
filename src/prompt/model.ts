@@ -50,8 +50,20 @@ const Part = Type.Union(
       },
       { ...strict, title: "File" },
     ),
+    Type.Object(
+      {
+        type: Type.Literal("audio"),
+        url: url("audio"),
+        format: Type.String({
+          minLength: 1,
+          description: 'Audio format, e.g. "wav" or "mp3". Providers need it alongside the audio itself.',
+        }),
+      },
+      { ...strict, title: "Audio" },
+    ),
+    Type.Object({ type: Type.Literal("video"), url: url("video") }, { ...strict, title: "Video" }),
   ],
-  { description: "One piece of a message: text, an image or a file." },
+  { description: "One piece of a message: text, an image, a file, audio or video." },
 );
 
 const Message = Type.Union([
@@ -152,7 +164,7 @@ export const promptFileSchema = {
 };
 
 export type PromptMessage = Type.Static<typeof Message>;
-/** One piece of a message: text, an image or a file. */
+/** One piece of a message: text, an image, a file, audio or video. */
 export type ContentPart = Type.Static<typeof Part>;
 /** What a message holds: plain text, or parts when it carries attachments. */
 export type MessageContent = string | ContentPart[];
