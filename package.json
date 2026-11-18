@@ -1,6 +1,6 @@
 {
   "name": "@traceandscale/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One TypeScript SDK for prompts, model calls, tracing and evals, with Braintrust, Langfuse and LangSmith as interchangeable backends.",
   "keywords": [
     "llm",
