@@ -69,3 +69,6 @@ release and the npm version are derived from it by `.github/workflows/release.ym
 
 Do not push version tags or run `npm publish` by hand. If a run fails after publishing, re-run it:
 it will only create the missing tag and release.
+
+The protections around releasing (approval on the `npm` environment, rules for `main` and for
+version tags, approval before outside pull requests run CI) are applied by `scripts/protect-repo.sh`.
