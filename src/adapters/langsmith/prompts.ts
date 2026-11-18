@@ -91,6 +91,17 @@ async function getPrompt(ctx: LangSmithContext, ref: PromptRef): Promise<RemoteP
 }
 
 /** Every private prompt repo of the workspace, with its commit tags as labels. */
+/** Every commit hash of a prompt, oldest first. LangSmith lists commits newest first. */
+async function listVersions(ctx: LangSmithContext, name: string): Promise<string[]> {
+  const handle = toHandle(name);
+  const hashes: string[] = [];
+  for (let offset = 0; ; offset += 100) {
+    const page = await ctx.http.find<{ commits: { commit_hash: string }[] }>("GET", `/commits/-/${handle}?limit=100&offset=${offset}`);
+    hashes.push(...(page?.commits ?? []).map((c) => c.commit_hash));
+    if (!page || page.commits.length < 100) return hashes.reverse();
+  }
+}
+
 async function listPrompts(ctx: LangSmithContext): Promise<{ name: string; labels: string[] }[]> {
   const out: { name: string; labels: string[] }[] = [];
   for (let offset = 0; ; offset += 100) {
@@ -156,6 +167,7 @@ export function createPrompts(ctx: LangSmithContext): PromptRegistry {
     capabilities: { ...CAPABILITIES },
     get: (ref) => getPrompt(ctx, ref),
     list: () => listPrompts(ctx),
+    versions: (name) => listVersions(ctx, name),
     push: (definition, pushOptions) => pushPrompt(ctx, definition, pushOptions),
     delete: (name) => deletePrompt(ctx, name),
     setLabels: (name, version, labels) => setLabels(ctx, name, version, labels),

@@ -197,6 +197,14 @@ export function promptRegistry({ http }: LangfuseContext): PromptRegistry {
       return row ? toRemote(row) : null;
     },
     list: () => listPrompts(http),
+    async versions(name) {
+      // The prompt list reports each prompt's version numbers; ask for this one by name.
+      const found = await http.find<{ data: { name: string; versions: number[] }[] }>("GET", "/v2/prompts", {
+        query: { name, page: "1", limit: "100" },
+      });
+      const versions = found?.data.find((p) => p.name === name)?.versions ?? [];
+      return [...versions].sort((a, b) => a - b).map(String);
+    },
     push: (definition, options) => pushPrompt(http, definition, options),
     async delete(name) {
       await http.find("DELETE", promptPath(name)); // removes every version; 404 means it was already gone

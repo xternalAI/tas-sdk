@@ -17,6 +17,7 @@ export * from "./eval.ts";
 export * from "./gateway.ts";
 export * from "./http.ts";
 export * from "./masking.ts";
+export * from "./migrate.ts";
 export * from "./portability.ts";
 export * from "./prompt/file.ts";
 export * from "./prompt/model.ts";
