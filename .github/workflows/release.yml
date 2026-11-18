@@ -1,14 +1,22 @@
 name: Release
 
-# package.json holds the version. On every push to main this checks whether that version is on npm
-# and tagged; if not, it waits for a maintainer's approval (the "npm" environment), then publishes,
-# tags and creates the GitHub release from this commit. Nobody pushes version tags by hand.
+# package.json holds the version. This workflow derives everything else from it, in two halves
+# with a person in between:
+#
+#   1. A push to main with a version npm does not have: run the checks, submit the package to npm
+#      for approval ("staged publishing") and tag the commit v<version>.
+#   2. A maintainer approves the staged version on npmjs.com with 2FA. Only then is it live.
+#   3. The next run (a push, the daily schedule, or a manual run) sees it live and creates the
+#      GitHub release.
 #
 # No npm token is stored anywhere: npm trusts this workflow in this repository ("trusted
-# publishing"). Pull requests, including those from forks, never run this workflow.
+# publishing"), and only to stage, never to publish directly. Pull requests, including those from
+# forks, never run this workflow. Nobody pushes version tags by hand.
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 6 * * *" # picks up an approval when nothing has been pushed since
   workflow_dispatch:
 
 permissions:
@@ -24,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.plan.outputs.version }}
-      publish: ${{ steps.plan.outputs.publish }}
+      stage: ${{ steps.plan.outputs.stage }}
       release: ${{ steps.plan.outputs.release }}
     steps:
       - uses: actions/checkout@v7
@@ -32,17 +40,20 @@ jobs:
         with:
           node-version: "24"
       - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/release-plan.ts
 
-  release:
-    name: Publish ${{ needs.plan.outputs.version }}
+  stage:
+    name: Stage ${{ needs.plan.outputs.version }} on npm
     needs: plan
-    if: ${{ needs.plan.outputs.publish == 'true' || needs.plan.outputs.release == 'true' }}
+    if: ${{ needs.plan.outputs.stage == 'true' }}
     runs-on: ubuntu-24.04
-    # Protected: a maintainer has to approve each run before it starts.
+    # The name npm's trusted publisher is bound to. Once the repository is public it is also
+    # protected: a maintainer approves each run before it starts (scripts/protect-repo.sh).
     environment: npm
     permissions:
-      contents: write # create the tag and the release
+      contents: write # push the tag
       id-token: write # prove to npm which workflow this is
     steps:
       - uses: actions/checkout@v7
@@ -53,12 +64,42 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Runs lint, typecheck, the tests and the build first (prepublishOnly, prepack).
-      - name: Publish to npm
-        if: ${{ needs.plan.outputs.publish == 'true' }}
-        run: npm publish
-      - name: Tag and create the GitHub release
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm coverage
+      - run: pnpm build
+      - run: node scripts/smoke-package.ts
+      - name: Submit to npm for approval
+        run: npm stage publish
+      # Only after a successful submission: the tag is what stops later runs submitting it again.
+      - name: Tag the commit
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+      - name: Say what happens next
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          {
+            echo "## ${VERSION} is waiting for approval on npm"
+            echo
+            echo "Approve it at https://www.npmjs.com (Staged Packages), or with \`npm stage list\` and \`npm stage approve <stage-id>\`."
+            echo "The GitHub release is created by the next run of this workflow after that."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    name: Release ${{ needs.plan.outputs.version }} on GitHub
+    needs: plan
+    if: ${{ needs.plan.outputs.release == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
-        run: gh release create "v${VERSION}" --target "${GITHUB_SHA}" --title "v${VERSION}" --generate-notes
+        # --target only matters for a version that has no tag yet (one published by hand).
+        run: gh release create "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "v${VERSION}" --generate-notes

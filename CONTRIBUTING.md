@@ -63,12 +63,15 @@ Maintainers only. The version in `package.json` is the single source of truth; t
 release and the npm version are derived from it by `.github/workflows/release.yml`.
 
 1. Bump the version in a pull request: `npm version patch --no-git-tag-version` (or `minor` / `major`).
-2. Merge it. The Release workflow sees a version npm does not have and waits for approval.
-3. Approve the run (Actions > Release > Review deployments). It runs the checks, publishes to npm,
-   creates the tag `v<version>` and the GitHub release with generated notes.
+2. Merge it. The Release workflow runs the checks, submits the version to npm for approval and
+   tags the commit `v<version>`.
+3. Approve it on npmjs.com (Staged Packages) with 2FA, or with `npm stage list` and
+   `npm stage approve <stage-id>`. Now it is live.
+4. The GitHub release is created by the workflow's next run: the next push, the daily schedule, or
+   Actions > Release > Run workflow.
 
-Do not push version tags or run `npm publish` by hand. If a run fails after publishing, re-run it:
-it will only create the missing tag and release.
+Do not push version tags or run `npm publish` by hand. To abandon a staged version, reject it on
+npm and bump the version; a tagged version is never submitted twice.
 
 The protections around releasing (approval on the `npm` environment, rules for `main` and for
 version tags, approval before outside pull requests run CI) are applied by `scripts/protect-repo.sh`.
