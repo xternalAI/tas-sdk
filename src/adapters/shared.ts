@@ -37,6 +37,8 @@ export interface RequestInput {
 export interface Http {
   /** JSON in, JSON out. Throws on any non-2xx status. An empty reply body is `undefined`. */
   request<T>(method: string, path: string, input?: RequestInput): Promise<T>;
+  /** As `request`, for calls whose reply is needed: an empty reply body is an error instead of `undefined`. */
+  expect<T>(method: string, path: string, input?: RequestInput): Promise<T>;
   /** As `request`, but a 404 is an answer ("not there") rather than an error, and returns `undefined`. */
   find<T>(method: string, path: string, input?: RequestInput): Promise<T | undefined>;
   /** The underlying fetch, for the rare call that is not JSON-over-`baseURL`. */
@@ -66,6 +68,11 @@ export function createHttp(options: HttpOptions): Http {
 
   return {
     request: (method, path, input = {}) => send(method, path, input, false) as Promise<never>,
+    async expect<T>(method: string, path: string, input: RequestInput = {}): Promise<T> {
+      const reply = await send<T>(method, path, input, false);
+      if (reply === undefined) throw fail(`${options.platform} ${method} ${path} succeeded but returned an empty reply`);
+      return reply;
+    },
     find: (method, path, input = {}) => send(method, path, input, true),
     fetch: doFetch,
   };

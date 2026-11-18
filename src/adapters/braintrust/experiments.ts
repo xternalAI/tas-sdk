@@ -17,7 +17,7 @@ async function reportExperiment(context: BraintrustContext, result: ExperimentRe
   const { http } = context;
   const project_id = await context.projectId();
   const datasetId = await upsertDataset(context, { ...result.dataset, items: result.rows.map(toDatasetItem) });
-  const experiment = await http.request<{ id: string }>("POST", "/v1/experiment", {
+  const experiment = await http.expect<{ id: string }>("POST", "/v1/experiment", {
     body: {
       project_id,
       name: result.runName,
@@ -29,7 +29,7 @@ async function reportExperiment(context: BraintrustContext, result: ExperimentRe
   await http.request("POST", `/v1/experiment/${experiment.id}/insert`, {
     body: { events: result.rows.map((row) => toExperimentEvent(row, datasetId)) },
   });
-  const summary = await http.request<{ experiment_url?: string }>("GET", `/v1/experiment/${experiment.id}/summarize`);
+  const summary = await http.expect<{ experiment_url?: string }>("GET", `/v1/experiment/${experiment.id}/summarize`);
   return summary.experiment_url ? { url: summary.experiment_url } : {};
 }
 

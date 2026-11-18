@@ -34,6 +34,12 @@ describe("createHttp", () => {
     expect(await http(204).request("DELETE", "/things/1")).toBeUndefined();
   });
 
+  it("`expect` is for replies that are needed: an empty one is an error", async () => {
+    expect(await http(200, '{"id":1}').expect("POST", "/things")).toEqual({ id: 1 });
+    await expect(http(200).expect("POST", "/things")).rejects.toThrow("acme POST /things succeeded but returned an empty reply");
+    await expect(http(500, "boom").expect("POST", "/things")).rejects.toMatchObject({ status: 500 });
+  });
+
   it("throws a PlatformError carrying the status and the start of the reply", async () => {
     const failure = await http(500, "boom ".repeat(200))
       .request("GET", "/things")

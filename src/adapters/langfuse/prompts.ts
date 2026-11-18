@@ -141,7 +141,10 @@ function decodeConfig(config: Row["config"]) {
   const { [ENVELOPE_KEY]: _, model, tools, response_format, ...rest } = config ?? {};
   const { output, other } = fromResponseFormat(response_format);
   if (other) rest.response_format = other;
-  return { model, tools: fromOpenAITools(tools as OpenAITool[] | undefined), output, rest };
+  // `config` is free-form, so someone may have put something else under "tools". It is not a tool
+  // list, but it is theirs: keep it with the other settings rather than drop it.
+  if (tools !== undefined && !Array.isArray(tools)) rest.tools = tools;
+  return { model, tools: Array.isArray(tools) ? fromOpenAITools(tools as OpenAITool[]) : undefined, output, rest };
 }
 
 /** The tags of one version. */
@@ -240,7 +243,7 @@ async function pushPrompt(http: Http, definition: PromptDefinition, options: Pus
     return { ...toRemote(current), labels: [...new Set([...userLabels(current.labels), ...labels])] };
   }
   if (current) assertReplaceable(current, def, options?.force);
-  return toRemote(await http.request<Row>("POST", "/v2/prompts", { body: { ...body, labels } }));
+  return toRemote(await http.expect<Row>("POST", "/v2/prompts", { body: { ...body, labels } }));
 }
 
 /** Refuse a push that Langfuse would reject, or that would silently lose something held there. */

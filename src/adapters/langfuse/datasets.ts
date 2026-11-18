@@ -33,7 +33,7 @@ export const remoteItemId = (dataset: string, id: string) => `${dataset}--${id}`
 /** Create the dataset if needed and upsert its items by id. Returns Langfuse's id for it. */
 export async function upsertDataset(http: Http, dataset: Dataset): Promise<string> {
   // Creating a dataset that exists returns the existing one.
-  const created = await http.request<{ id: string }>("POST", "/v2/datasets", {
+  const created = await http.expect<{ id: string }>("POST", "/v2/datasets", {
     body: { name: dataset.name, ...(dataset.description ? { description: dataset.description } : {}) },
   });
   for (const item of dataset.items) {
