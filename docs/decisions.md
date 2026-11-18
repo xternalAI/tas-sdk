@@ -263,6 +263,7 @@ Pinned by `test/studio.test.ts`.
 - **The published package is compiled JavaScript with type declarations** (`dist/`), ESM only, Node 22.18 or newer. `package.json` points at `dist` directly, so `npm publish` and `pnpm publish` ship the same thing. In development everything runs from TypeScript source; `pnpm tas` runs the CLI from source.
 - **`scripts/smoke-package.ts` tests the package as shipped**: it packs it, installs the tarball into an empty project with npm, imports it, type-checks against its declarations and runs `tas`. CI runs it after the build, on Node 22, 24 and 26.
 - **CI runs everything that works offline** (lint, typecheck, tests with coverage thresholds, build, package smoke test) and needs no secrets. Live tests stay manual: they create real things on real accounts.
+- **Coverage is reported by CI itself, with no coverage service**: `scripts/coverage-report.ts` writes a table to the run's summary page, the HTML report is attached to the run as an artifact, and a badge SVG is pushed to a `badges` branch that the README shows. *Caveat:* the badge shows line coverage of the last push to `main`, rounded down.
 - **Publishing runs the checks first** (`prepublishOnly`: lint, typecheck, coverage; `prepack`: build), so a broken tree cannot be published by accident.
 - **`defineConfig` returns `TasConfig` or `TasProfiles`, not the literal type it was given**, so its result can always be passed to `createClient` (pinned in `test/core.test.ts`).
 

@@ -9,7 +9,8 @@ export default defineConfig({
       include: ["src/**/*.ts"],
       // The executable is one line around `runCli`; it is exercised by a test that starts a real process.
       exclude: ["src/bin.ts"],
-      reporter: ["text", "json-summary"],
+      // html: the browsable report CI attaches to each run. json-summary: read by scripts/coverage-report.ts.
+      reporter: ["text", "json-summary", "html"],
       // The floor the project commits to. `pnpm coverage` fails below it.
       thresholds: { statements: 96, branches: 89, functions: 95, lines: 98 },
     },
