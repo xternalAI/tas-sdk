@@ -1,0 +1,64 @@
+name: Release
+
+# package.json holds the version. On every push to main this checks whether that version is on npm
+# and tagged; if not, it waits for a maintainer's approval (the "npm" environment), then publishes,
+# tags and creates the GitHub release from this commit. Nobody pushes version tags by hand.
+#
+# No npm token is stored anywhere: npm trusts this workflow in this repository ("trusted
+# publishing"). Pull requests, including those from forks, never run this workflow.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+      release: ${{ steps.plan.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - id: plan
+        run: node scripts/release-plan.ts
+
+  release:
+    name: Publish ${{ needs.plan.outputs.version }}
+    needs: plan
+    if: ${{ needs.plan.outputs.publish == 'true' || needs.plan.outputs.release == 'true' }}
+    runs-on: ubuntu-24.04
+    # Protected: a maintainer has to approve each run before it starts.
+    environment: npm
+    permissions:
+      contents: write # create the tag and the release
+      id-token: write # prove to npm which workflow this is
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Runs lint, typecheck, the tests and the build first (prepublishOnly, prepack).
+      - name: Publish to npm
+        if: ${{ needs.plan.outputs.publish == 'true' }}
+        run: npm publish
+      - name: Tag and create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: gh release create "v${VERSION}" --target "${GITHUB_SHA}" --title "v${VERSION}" --generate-notes
