@@ -204,6 +204,27 @@ await chat.send("My card was declined");
 await chat.send("It is a Visa");
 ```
 
+**Choosing a version.** Any call can name a past version, or a label (an "environment" on some
+platforms; both words work):
+
+```ts
+await tas.run("support/triage", { variables, version: "12" });          // a past version, by the platform's id
+await tas.run("support/triage", { variables, environment: "staging" }); // the same as label: "staging"
+```
+
+To do that for everything in a block without touching the calls inside it, for example to serve a
+preview deployment from "staging" or to replay an incident with the prompt as it was then:
+
+```ts
+await tas.withPromptOverrides(
+  { environment: "staging", prompts: { "support/triage": { version: "12" } } },
+  () => handleRequest(req),
+);
+```
+
+The call wins over the block, and a per-prompt entry wins over the block's environment. An
+overridden prompt is always read from the platform and throws if it is not there.
+
 Override per call with `model`, `params` and `output`. `output` accepts a JSON Schema or any
 [Standard Schema](https://standardschema.dev) validator (Zod, Valibot, ArkType, TypeBox), and the
 result is typed from it:
